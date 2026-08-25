@@ -1,8 +1,9 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>HK Bus Dashboard</title>
@@ -247,7 +248,6 @@
   </style>
 </head>
 <body>
-
   <header>
     <div class="title-group">
       <h1>LIVE BUS ETA</h1>
@@ -284,15 +284,15 @@
 
     function updateClock() {
       const now = new Date();
-      document.getElementById('clock').textContent = 
-        `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      document.getElementById('clock').textContent =
+        `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     }
     setInterval(updateClock, 1000);
     updateClock();
 
     function updateLastUpdated() {
       const now = new Date();
-      const timeText = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      const timeText = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
       document.getElementById('last-updated').textContent = `Updated ${timeText}`;
     }
 
@@ -320,6 +320,7 @@
 
     function addSavedRoute(route, dest, stopId) {
       const key = getSavedRouteKey(route, dest, stopId);
+      if (!route || !dest || !stopId) return;
       if (isSavedRoute(route, dest, stopId)) return;
       savedRoutes.push({ key, route, dest, stopId, label: `${route} ${dest}` });
       saveSavedRoutes();
@@ -388,7 +389,7 @@
 
           if (currentMode === 'daily') {
             if (savedRoutes.length > 0) {
-              activeStopIds = [...new Set(savedRoutes.map(item => item.stopId))];
+              activeStopIds = [...new Set(savedRoutes.map(item => item.stopId).filter(Boolean))];
               updateMetaText('Saved Stops');
               startEtaLoop();
             } else if (HARDCODED_STOPS.length > 0) {
@@ -439,7 +440,7 @@
 
       if (currentMode === 'daily') {
         if (savedRoutes.length > 0) {
-          activeStopIds = [...new Set(savedRoutes.map(item => item.stopId))];
+          activeStopIds = [...new Set(savedRoutes.map(item => item.stopId).filter(Boolean))];
           updateMetaText('Saved Stops');
           startEtaLoop();
           return;
@@ -491,8 +492,8 @@
       activeStopIds = nearbyStops.map(s => s.stop);
 
       if (activeStopIds.length === 0) {
-        document.getElementById('eta-container').innerHTML = 
-          `<div class="status-msg">No KMB stops found within 500m.</div>`;
+        document.getElementById('eta-container').innerHTML =
+          '<div class="status-msg">No KMB stops found within 500m.</div>';
         updateMetaText('No nearby stops');
         return;
       }
@@ -629,6 +630,5 @@
 
     initDashboard();
   </script>
-</body>
 </body>
 </html>
