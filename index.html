@@ -53,7 +53,11 @@
     }
 
     .meta-info {
+<<<<<<< HEAD
       font-size: 1.05rem;
+=======
+      font-size: 1.1rem;
+>>>>>>> 741754a6a0cd473aaf7f65faf6073b5af6610364
       color: var(--subtext);
       margin-top: 4px;
     }
@@ -271,16 +275,25 @@
   </div>
 
   <script>
+<<<<<<< HEAD
     const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
     const HARDCODED_STOPS = [];
     const MAX_ROUTE_CARDS = 4;
+=======
+    // OPTIONAL: Hardcode your specific stop IDs here if you want to bypass GPS
+    // e.g., const HARDCODED_STOPS = ['AA97FFC49AE957A5'];
+    const HARDCODED_STOPS = []; 
+>>>>>>> 741754a6a0cd473aaf7f65faf6073b5af6610364
 
     let allStops = [];
     let activeStopIds = [];
     let currentTemp = '';
+<<<<<<< HEAD
     let currentMode = HARDCODED_STOPS.length > 0 ? 'daily' : 'nearby';
     let etaPollTimer = null;
     let savedRoutes = [];
+=======
+>>>>>>> 741754a6a0cd473aaf7f65faf6073b5af6610364
 
     function updateClock() {
       const now = new Date();
@@ -518,6 +531,85 @@
       etaPollTimer = setInterval(fetchEtas, 20000);
     }
 
+<<<<<<< HEAD
+=======
+    function updateMetaText(statusMsg = '') {
+      const parts = ['Hong Kong'];
+      if (currentTemp) parts.push(currentTemp);
+      if (statusMsg) parts.push(statusMsg);
+      document.getElementById('meta-text').textContent = parts.join(' • ');
+    }
+
+    // Distance calculation
+    function getDistanceKm(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    async function initDashboard() {
+      if (HARDCODED_STOPS.length > 0) {
+        activeStopIds = HARDCODED_STOPS;
+        updateMetaText('Saved Stops');
+        startEtaLoop();
+        return;
+      }
+
+      try {
+        // Load stop database
+        const res = await fetch('https://data.etabus.gov.hk/v1/transport/kmb/stop');
+        const json = await res.json();
+        allStops = json.data || [];
+
+        if ("geolocation" in navigator) {
+          navigator.geolocation.getCurrentPosition(onLocationSuccess, onLocationError, {
+            enableHighAccuracy: true,
+            timeout: 10000
+          });
+        } else {
+          showError("Geolocation not supported.");
+        }
+      } catch (e) {
+        showError("Failed to fetch KMB stop metadata.");
+      }
+    }
+
+    function onLocationSuccess(position) {
+      const userLat = position.coords.latitude;
+      const userLong = position.coords.longitude;
+
+      const nearbyStops = allStops.filter(stop => {
+        const dist = getDistanceKm(userLat, userLong, parseFloat(stop.lat), parseFloat(stop.long));
+        return dist <= 0.35; // ~350m radius
+      });
+
+      activeStopIds = nearbyStops.map(s => s.stop);
+
+      if (activeStopIds.length === 0) {
+        document.getElementById('eta-container').innerHTML = 
+          `<div class="status-msg">No KMB stops found within 350m.</div>`;
+        updateMetaText('No nearby stops');
+        return;
+      }
+
+      updateMetaText(`Nearby Stops (~350m)`);
+      startEtaLoop();
+    }
+
+    function onLocationError() {
+      showError("Location access denied.");
+    }
+
+    function startEtaLoop() {
+      fetchEtas();
+      setInterval(fetchEtas, 20000); // refresh every 20s
+    }
+
+>>>>>>> 741754a6a0cd473aaf7f65faf6073b5af6610364
     async function fetchEtas() {
       if (!activeStopIds.length) {
         return;
@@ -536,6 +628,7 @@
       const results = await Promise.all(promises);
 
       results.flat().forEach(item => {
+<<<<<<< HEAD
         if (!item || !item.route) return;
 
         const destination = item.dest_en || item.dest_tc || 'Unknown';
@@ -551,8 +644,12 @@
         }
 
         if (item.eta && item.eta.trim() !== '') {
+=======
+        if (item && item.eta && item.eta.trim() !== "") {
+>>>>>>> 741754a6a0cd473aaf7f65faf6073b5af6610364
           const etaTime = new Date(item.eta);
           const diffMins = Math.round((etaTime - now) / 60000);
+          
           if (diffMins >= 0) {
             routeMap[key].etas.push(diffMins);
           }
@@ -561,6 +658,7 @@
         }
       });
 
+<<<<<<< HEAD
       const groupedList = Object.values(routeMap)
         .map(r => {
           r.etas.sort((a, b) => a - b);
@@ -572,6 +670,12 @@
           if (b.etas.length === 0) return -1;
           return a.etas[0] - b.etas[0];
         });
+=======
+      let groupedList = Object.values(routeMap).map(r => {
+        r.etas.sort((a, b) => a - b);
+        return r;
+      });
+>>>>>>> 741754a6a0cd473aaf7f65faf6073b5af6610364
 
       renderEtas(groupedList.slice(0, MAX_ROUTE_CARDS));
       updateLastUpdated();
@@ -580,7 +684,11 @@
     function renderEtas(routes) {
       const container = document.getElementById('eta-container');
       if (routes.length === 0) {
+<<<<<<< HEAD
         container.innerHTML = '<div class="status-msg">No upcoming buses found.</div>';
+=======
+        container.innerHTML = `<div class="status-msg">No upcoming buses found.</div>`;
+>>>>>>> 741754a6a0cd473aaf7f65faf6073b5af6610364
         return;
       }
 
