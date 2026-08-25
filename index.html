@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>HK Bus Dashboard</title>
   <style>
     :root {
@@ -48,7 +49,7 @@
       letter-spacing: 0.5px;
     }
 
-    .weather-info {
+    .meta-info {
       font-size: 1.1rem;
       color: var(--subtext);
       margin-top: 4px;
@@ -143,18 +144,23 @@
   <header>
     <div class="title-group">
       <h1>LIVE BUS ETA</h1>
-      <div class="weather-info" id="weather">Loading Weather...</div>
+      <div class="meta-info" id="meta-text">Locating & Loading Weather...</div>
     </div>
     <div id="clock">00:00</div>
   </header>
 
   <div id="eta-container">
-    <div class="status-msg">Fetching Bus ETAs...</div>
+    <div class="status-msg">Initializing Dashboard...</div>
   </div>
 
   <script>
-    // Config: Add your stop IDs here
-    const MY_STOPS = ['KC378', 'KC674', 'KC375', 'KC377', 'KC672', 'KC376'];
+    // OPTIONAL: Hardcode your specific stop IDs here if you want to bypass GPS
+    // e.g., const HARDCODED_STOPS = ['AA97FFC49AE957A5'];
+    const HARDCODED_STOPS = []; 
+
+    let allStops = [];
+    let activeStopIds = [];
+    let currentTemp = '';
 
     // Clock
     function updateClock() {
@@ -170,21 +176,96 @@
       try {
         const res = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=en');
         const data = await res.json();
-        const temp = data.temperature.data[0].value;
-        document.getElementById('weather').textContent = `Hong Kong • ${temp}°C`;
+        currentTemp = `${data.temperature.data[0].value}°C`;
       } catch (e) {
-        document.getElementById('weather').textContent = `Hong Kong`;
+        currentTemp = '';
       }
+      updateMetaText();
     }
     fetchWeather();
     setInterval(fetchWeather, 600000); // 10 min refresh
 
-    // Fetch & Group Bus ETAs
+    function updateMetaText(statusMsg = '') {
+      const parts = ['Hong Kong'];
+      if (currentTemp) parts.push(currentTemp);
+      if (statusMsg) parts.push(statusMsg);
+      document.getElementById('meta-text').textContent = parts.join(' • ');
+    }
+
+    // Distance calculation
+    function getDistanceKm(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    async function initDashboard() {
+      if (HARDCODED_STOPS.length > 0) {
+        activeStopIds = HARDCODED_STOPS;
+        updateMetaText('Saved Stops');
+        startEtaLoop();
+        return;
+      }
+
+      try {
+        // Load stop database
+        const res = await fetch('https://data.etabus.gov.hk/v1/transport/kmb/stop');
+        const json = await res.json();
+        allStops = json.data || [];
+
+        if ("geolocation" in navigator) {
+          navigator.geolocation.getCurrentPosition(onLocationSuccess, onLocationError, {
+            enableHighAccuracy: true,
+            timeout: 10000
+          });
+        } else {
+          showError("Geolocation not supported.");
+        }
+      } catch (e) {
+        showError("Failed to fetch KMB stop metadata.");
+      }
+    }
+
+    function onLocationSuccess(position) {
+      const userLat = position.coords.latitude;
+      const userLong = position.coords.longitude;
+
+      const nearbyStops = allStops.filter(stop => {
+        const dist = getDistanceKm(userLat, userLong, parseFloat(stop.lat), parseFloat(stop.long));
+        return dist <= 0.35; // ~350m radius
+      });
+
+      activeStopIds = nearbyStops.map(s => s.stop);
+
+      if (activeStopIds.length === 0) {
+        document.getElementById('eta-container').innerHTML = 
+          `<div class="status-msg">No KMB stops found within 350m.</div>`;
+        updateMetaText('No nearby stops');
+        return;
+      }
+
+      updateMetaText(`Nearby Stops (~350m)`);
+      startEtaLoop();
+    }
+
+    function onLocationError() {
+      showError("Location access denied.");
+    }
+
+    function startEtaLoop() {
+      fetchEtas();
+      setInterval(fetchEtas, 20000); // refresh every 20s
+    }
+
     async function fetchEtas() {
       let routeMap = {};
       const now = new Date();
 
-      const promises = MY_STOPS.map(stopId =>
+      const promises = activeStopIds.map(stopId =>
         fetch(`https://data.etabus.gov.hk/v1/transport/kmb/stop-eta/${stopId}`)
           .then(res => res.json())
           .then(json => json.data || [])
@@ -194,9 +275,10 @@
       const results = await Promise.all(promises);
 
       results.flat().forEach(item => {
-        if (item && item.eta) {
+        if (item && item.eta && item.eta.trim() !== "") {
           const etaTime = new Date(item.eta);
           const diffMins = Math.round((etaTime - now) / 60000);
+          
           if (diffMins >= 0) {
             const key = `${item.route}-${item.dest_en}`;
             if (!routeMap[key]) {
@@ -211,7 +293,6 @@
         }
       });
 
-      // Process grouped routes
       let groupedList = Object.values(routeMap).map(r => {
         r.etas.sort((a, b) => a - b);
         return r;
@@ -224,7 +305,7 @@
     function renderEtas(routes) {
       const container = document.getElementById('eta-container');
       if (routes.length === 0) {
-        container.innerHTML = `<div class="status-msg">No upcoming buses.</div>`;
+        container.innerHTML = `<div class="status-msg">No upcoming buses found.</div>`;
         return;
       }
 
@@ -259,8 +340,12 @@
       }).join('');
     }
 
-    fetchEtas();
-    setInterval(fetchEtas, 20000);
+    function showError(msg) {
+      document.getElementById('eta-container').innerHTML = `<div class="status-msg">${msg}</div>`;
+      updateMetaText('Error');
+    }
+
+    initDashboard();
   </script>
 </body>
 </html>
