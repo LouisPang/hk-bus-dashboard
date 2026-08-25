@@ -4,8 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Bus ETA Dashboard</title>
+  <title>HK Bus Dashboard</title>
   <style>
     :root {
       --bg: #000000;
@@ -14,23 +13,21 @@
       --text: #FFFFFF;
       --subtext: #A0A0A0;
       --border: #222222;
+      --urgent: #FF453A;
+      --warning: #FF9F0A;
+      --safe: #30D158;
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-      user-select: none;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
 
     body {
       background-color: var(--bg);
       color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
       height: 100vh;
       width: 100vw;
       overflow: hidden;
-      padding: 24px;
+      padding: 20px 28px;
       display: flex;
       flex-direction: column;
     }
@@ -39,26 +36,26 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding-bottom: 20px;
+      padding-bottom: 16px;
       border-bottom: 2px solid var(--border);
-      margin-bottom: 20px;
+      margin-bottom: 16px;
     }
 
     .title-group h1 {
-      font-size: 2rem;
-      font-weight: 700;
+      font-size: 1.8rem;
+      font-weight: 800;
       color: var(--accent);
       letter-spacing: 0.5px;
     }
 
-    .title-group p {
-      font-size: 1rem;
+    .weather-info {
+      font-size: 1.1rem;
       color: var(--subtext);
       margin-top: 4px;
     }
 
     #clock {
-      font-size: 3.5rem;
+      font-size: 3.8rem;
       font-weight: 800;
       font-variant-numeric: tabular-nums;
       color: var(--text);
@@ -70,14 +67,14 @@
       overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 10px;
     }
 
     .eta-card {
       background: var(--card-bg);
       border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 16px 24px;
+      padding: 14px 20px;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -86,54 +83,58 @@
     .route-info {
       display: flex;
       align-items: center;
-      gap: 20px;
+      gap: 18px;
     }
 
     .route-badge {
       background: var(--accent);
       color: #000;
-      font-size: 2.2rem;
+      font-size: 2rem;
       font-weight: 900;
-      padding: 4px 16px;
+      padding: 4px 12px;
       border-radius: 8px;
-      min-width: 110px;
+      min-width: 100px;
       text-align: center;
     }
 
-    .destination-group {
-      display: flex;
-      flex-direction: column;
-    }
-
     .destination {
-      font-size: 1.6rem;
+      font-size: 1.5rem;
       font-weight: 700;
     }
 
-    .stop-name {
-      font-size: 1rem;
-      color: var(--subtext);
-      margin-top: 2px;
+    .eta-times {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
     }
 
-    .eta-time {
-      font-size: 2.5rem;
+    .eta-primary {
+      font-size: 2.4rem;
       font-weight: 800;
-      color: var(--accent);
-      text-align: right;
     }
 
-    .eta-unit {
-      font-size: 1.2rem;
-      font-weight: 500;
+    .eta-secondary {
+      font-size: 1.3rem;
       color: var(--subtext);
+      font-weight: 600;
+    }
+
+    .due { color: var(--urgent); animation: pulse 1.5s infinite; }
+    .urgent { color: var(--urgent); }
+    .warning { color: var(--warning); }
+    .safe { color: var(--safe); }
+
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.4; }
+      100% { opacity: 1; }
     }
 
     .status-msg {
       font-size: 1.5rem;
       color: var(--subtext);
       text-align: center;
-      margin-top: 100px;
+      margin-top: 80px;
     }
   </style>
 </head>
@@ -142,154 +143,124 @@
   <header>
     <div class="title-group">
       <h1>LIVE BUS ETA</h1>
-      <p id="status">Locating...</p>
+      <div class="weather-info" id="weather">Loading Weather...</div>
     </div>
     <div id="clock">00:00</div>
   </header>
 
   <div id="eta-container">
-    <div class="status-msg">Fetching GPS location...</div>
+    <div class="status-msg">Fetching Bus ETAs...</div>
   </div>
 
   <script>
-    // Digital Clock
+    // Config: Add your stop IDs here
+    const MY_STOPS = ['KC378', 'KC674', 'KC375', 'KC377', 'KC672', 'KC376'];
+
+    // Clock
     function updateClock() {
       const now = new Date();
-      const hours = String(now.getHours()).padStart(2, '0');
-      const minutes = String(now.getMinutes()).padStart(2, '0');
-      document.getElementById('clock').textContent = `${hours}:${minutes}`;
+      document.getElementById('clock').textContent = 
+        `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
     }
     setInterval(updateClock, 1000);
     updateClock();
 
-    let allStops = [];
-    const MAX_DISTANCE_KM = 0.35; // ~350m radius
-
-    // Distance calculation formula
-    function getDistanceKm(lat1, lon1, lat2, lon2) {
-      const R = 6371;
-      const dLat = (lat2 - lat1) * Math.PI / 180;
-      const dLon = (lon2 - lon1) * Math.PI / 180;
-      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-                Math.sin(dLon / 2) * Math.sin(dLon / 2);
-      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    }
-
-    async function initDashboard() {
+    // HKO Weather
+    async function fetchWeather() {
       try {
-        // Fetch all KMB stops metadata once
-        const res = await fetch('https://data.etabus.gov.hk/v1/transport/kmb/stop');
-        const json = await res.json();
-        allStops = json.data;
-
-        // Trigger Geolocation
-        if ("geolocation" in navigator) {
-          navigator.geolocation.getCurrentPosition(onLocationSuccess, onLocationError, {
-            enableHighAccuracy: true,
-            timeout: 10000
-          });
-        } else {
-          showError("Geolocation not supported on this browser.");
-        }
+        const res = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=en');
+        const data = await res.json();
+        const temp = data.temperature.data[0].value;
+        document.getElementById('weather').textContent = `Hong Kong • ${temp}°C`;
       } catch (e) {
-        showError("Failed to load KMB stops data.");
+        document.getElementById('weather').textContent = `Hong Kong`;
       }
     }
+    fetchWeather();
+    setInterval(fetchWeather, 600000); // 10 min refresh
 
-    async function onLocationSuccess(position) {
-      const userLat = position.coords.latitude;
-      const userLong = position.coords.longitude;
+    // Fetch & Group Bus ETAs
+    async function fetchEtas() {
+      let routeMap = {};
+      const now = new Date();
 
-      document.getElementById('status').textContent = `Nearby Stops (~350m)`;
-
-      // Filter stops within radius
-      const nearbyStops = allStops.filter(stop => {
-        const dist = getDistanceKm(userLat, userLong, parseFloat(stop.lat), parseFloat(stop.long));
-        return dist <= MAX_DISTANCE_KM;
-      });
-
-      if (nearbyStops.length === 0) {
-        document.getElementById('eta-container').innerHTML = 
-          `<div class="status-msg">No KMB bus stops found within 350 meters.</div>`;
-        return;
-      }
-
-      fetchEtasForStops(nearbyStops);
-      setInterval(() => fetchEtasForStops(nearbyStops), 30000); // 30s auto-refresh
-    }
-
-    function onLocationError() {
-      showError("Location access denied. Please enable Location Services.");
-    }
-
-    async function fetchEtasForStops(stops) {
-      let allEtas = [];
-
-      // Query ETA API for nearby stops
-      const promises = stops.map(stop =>
-        fetch(`https://data.etabus.gov.hk/v1/transport/kmb/stop-eta/${stop.stop}`)
+      const promises = MY_STOPS.map(stopId =>
+        fetch(`https://data.etabus.gov.hk/v1/transport/kmb/stop-eta/${stopId}`)
           .then(res => res.json())
-          .then(json => ({ stopName: stop.name_en, data: json.data }))
-          .catch(() => null)
+          .then(json => json.data || [])
+          .catch(() => [])
       );
 
       const results = await Promise.all(promises);
 
-      const now = new Date();
-
-      results.forEach(result => {
-        if (!result || !result.data) return;
-        result.data.forEach(item => {
-          if (item.eta) {
-            const etaTime = new Date(item.eta);
-            const diffMins = Math.round((etaTime - now) / 60000);
-            if (diffMins >= 0) {
-              allEtas.push({
+      results.flat().forEach(item => {
+        if (item && item.eta) {
+          const etaTime = new Date(item.eta);
+          const diffMins = Math.round((etaTime - now) / 60000);
+          if (diffMins >= 0) {
+            const key = `${item.route}-${item.dest_en}`;
+            if (!routeMap[key]) {
+              routeMap[key] = {
                 route: item.route,
-                dest: item.dest_en,
-                stopName: result.stopName,
-                mins: diffMins
-              });
+                dest: item.dest_en || item.dest_tc,
+                etas: []
+              };
             }
+            routeMap[key].etas.push(diffMins);
           }
-        });
+        }
       });
 
-      // Sort arrivals chronologically
-      allEtas.sort((a, b) => a.mins - b.mins);
-      renderEtas(allEtas.slice(0, 8)); // Display top 8 incoming routes
+      // Process grouped routes
+      let groupedList = Object.values(routeMap).map(r => {
+        r.etas.sort((a, b) => a - b);
+        return r;
+      });
+
+      groupedList.sort((a, b) => a.etas[0] - b.etas[0]);
+      renderEtas(groupedList.slice(0, 6));
     }
 
-    function renderEtas(etas) {
+    function renderEtas(routes) {
       const container = document.getElementById('eta-container');
-      if (etas.length === 0) {
-        container.innerHTML = `<div class="status-msg">No upcoming buses in the next hour.</div>`;
+      if (routes.length === 0) {
+        container.innerHTML = `<div class="status-msg">No upcoming buses.</div>`;
         return;
       }
 
-      container.innerHTML = etas.map(eta => `
-        <div class="eta-card">
-          <div class="route-info">
-            <div class="route-badge">${eta.route}</div>
-            <div class="destination-group">
-              <div class="destination">to ${eta.dest}</div>
-              <div class="stop-name">${eta.stopName}</div>
+      container.innerHTML = routes.map(r => {
+        const firstEta = r.etas[0];
+        const nextEtas = r.etas.slice(1, 3).map(m => `${m}m`).join(', ');
+
+        let timeClass = 'safe';
+        let displayTime = `${firstEta} <span style="font-size:1.2rem">min</span>`;
+
+        if (firstEta === 0) {
+          timeClass = 'due';
+          displayTime = 'Due';
+        } else if (firstEta <= 3) {
+          timeClass = 'urgent';
+        } else if (firstEta <= 7) {
+          timeClass = 'warning';
+        }
+
+        return `
+          <div class="eta-card">
+            <div class="route-info">
+              <div class="route-badge">${r.route}</div>
+              <div class="destination">to ${r.dest}</div>
+            </div>
+            <div class="eta-times">
+              <div class="eta-primary ${timeClass}">${displayTime}</div>
+              ${nextEtas ? `<div class="eta-secondary">Next: ${nextEtas}</div>` : ''}
             </div>
           </div>
-          <div class="eta-time">
-            ${eta.mins === 0 ? 'Due' : eta.mins}
-            <span class="eta-unit">${eta.mins === 0 ? '' : 'min'}</span>
-          </div>
-        </div>
-      `).join('');
+        `;
+      }).join('');
     }
 
-    function showError(msg) {
-      document.getElementById('eta-container').innerHTML = `<div class="status-msg">${msg}</div>`;
-    }
-
-    initDashboard();
+    fetchEtas();
+    setInterval(fetchEtas, 20000);
   </script>
 </body>
 </html>
