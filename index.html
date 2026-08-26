@@ -971,12 +971,17 @@ async function fetchWeather() {
   fetchWeather();
   setInterval(fetchWeather, 600000);
 
-  function updateMetaText(statusMsg = '') {
-    const parts = ['香港'];
-    if (currentTemp) parts.push(currentTemp);
-    if (statusMsg) parts.push(statusMsg);
-    document.getElementById('meta-text').textContent = parts.join(' • ');
+function updateMetaText(stationName = '', statusMsg = '') {
+  const parts = [];
+  if (stationName) parts.push(stationName);
+  if (currentTemp) parts.push(currentTemp);
+  if (statusMsg) parts.push(statusMsg);
+  
+  const el = document.getElementById('meta-text') || document.getElementById('weather-meta');
+  if (el) {
+    el.textContent = parts.join(' • ');
   }
+}
 
   function updateSearchVisibility() {
     const searchContainer = document.getElementById('toolbar-search');
