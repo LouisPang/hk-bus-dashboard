@@ -595,31 +595,43 @@
           fetchJson('https://rt.data.gov.hk/v1/transport/citybus-nwfb/route-stop/ctb')
         ]);
 
-        const list = [
-          ...extractData(kmbJson),
-          ...extractData(ctbJson).map(item => ({ ...item, co: 'CTB' }))
-        ];
+        // Keep route-stop data separated by operator. KMB/LWB and CTB have
+        // different API schemas and may share route numbers.
+        const db = { kmb: {}, lwb: {}, ctb: {} };
 
-        const db = {};
-        list.forEach(item => {
+        extractData(kmbJson).forEach(item => {
           if (!item?.route || !item?.stop) return;
-
-          const route = String(item.route).toUpperCase();
           const provider = normalizeProvider(item.co);
-          const serviceType = normalizeServiceType(item.service_type);
-          const direction = normalizeDirection(item.bound || item.dir);
+          const route = String(item.route).toUpperCase();
+          if (!db[provider]) db[provider] = {};
+          if (!db[provider][route]) db[provider][route] = [];
 
-          if (!db[route]) db[route] = [];
-
-          db[route].push({
+          db[provider][route].push({
             route,
             stopId: item.stop,
             seq: parseInt(item.seq, 10) || 0,
-            bound: direction,
-            dir: direction,
-            serviceType,
+            dir: normalizeDirection(item.dir || item.bound),
+            serviceType: normalizeServiceType(item.service_type),
             provider,
             providerCode: getProvider(provider).code
+          });
+        });
+
+        // CTB Route-Stop API fields are explicitly: co, route, dir, seq, stop.
+        extractData(ctbJson).forEach(item => {
+          if (!item?.route || !item?.stop) return;
+          const provider = 'ctb';
+          const route = String(item.route).toUpperCase();
+          if (!db.ctb[route]) db.ctb[route] = [];
+
+          db.ctb[route].push({
+            route,
+            stopId: String(item.stop).padStart(6, '0'),
+            seq: parseInt(item.seq, 10) || 0,
+            dir: normalizeDirection(item.dir),
+            serviceType: 1,
+            provider,
+            providerCode: 'CTB'
           });
         });
 
@@ -630,7 +642,7 @@
         }));
         return db;
       } catch (e) {
-        return {};
+        return { kmb: {}, lwb: {}, ctb: {} };
       }
     }
 
@@ -1167,7 +1179,7 @@
     }
 
     async function fetchCtbStopEta(stopId) {
-      const url = `https://rt.data.gov.hk/v1/transport/batch/stop-eta/ctb/${encodeURIComponent(stopId)}?lang=zh-hant`;
+      const url = `https://rt.data.gov.hk/v1/transport/batch/stop-eta/CTB/${encodeURIComponent(String(stopId).padStart(6, '0'))}?lang=zh-hant`;
       try {
         return await fetchWithCache(url);
       } catch (error) {
@@ -1176,11 +1188,22 @@
     }
 
     async function fetchCtbRouteEta(stopId, route) {
-      const url = `https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}`;
+      const safeStop = encodeURIComponent(String(stopId).padStart(6, '0'));
+      const safeRoute = encodeURIComponent(route);
+      const url = `https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${safeStop}/${safeRoute}`;
       try {
-        return await fetchWithCache(url);
+        const json = await fetchWithCache(url);
+        if (extractData(json).length > 0) return json;
+
+        // Fallback to the official consolidated stop-ETA API. This is useful
+        // for CTB routes where the route-specific V2 response has no rows.
+        return await fetchCtbStopEta(stopId);
       } catch (error) {
-        return { data: [] };
+        try {
+          return await fetchCtbStopEta(stopId);
+        } catch (fallbackError) {
+          return { data: [] };
+        }
       }
     }
 
@@ -1583,12 +1606,8 @@
               r.dir
             );
 
-            const directionText = directionLabel(r.dir);
-            const serviceText = r.serviceType ? `S${r.serviceType}` : '';
-            const metaText = [directionText, serviceText]
-              .filter(Boolean)
-              .join(' · ');
-
+            // Direction and sequence remain internal API metadata only.
+            // They are deliberately not shown on the card.
             const remarkMarkup = primaryEtaRemark
               ? `<div class="eta-remark" title="${escapeHtml(primaryEtaRemark)}">${escapeHtml(primaryEtaRemark)}</div>`
               : '';
@@ -1607,9 +1626,6 @@
                   </div>
                   <div class="destination-wrap">
                     <div class="destination">${escapeHtml(r.dest)}</div>
-                    ${metaText
-                      ? `<div class="route-meta">${escapeHtml(metaText)}</div>`
-                      : ''}
                   </div>
                 </div>
 
