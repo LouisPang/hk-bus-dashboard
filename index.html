@@ -105,7 +105,7 @@
       color: var(--button-active-text);
     }
 
-    #last-updated {
+    #last-updated, #ctb-updated {
       color: var(--subtext);
       font-size: 0.9rem;
       font-weight: 600;
@@ -391,7 +391,7 @@
       <button class="mode-button" data-mode="nearby">附近即時</button>
     </div>
     <div style="display:flex;align-items:center;gap:8px;">
-      <div id="last-updated">更新 --:--</div>
+      <div id="last-updated">KMB/LWB 更新 --:--</div><div id="ctb-updated">CTB 更新 --:--:--</div>
     </div>
   </div>
 
@@ -415,7 +415,7 @@
     */
 
     const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
-    const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db.v3';
+    const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db.v4';
     const ROUTE_DB_TTL = 86400000;
     const ETA_CACHE_TTL = 15000;
     const REQUEST_CONCURRENCY = 6;
@@ -454,6 +454,7 @@
     let etaCache = new Map();
     let requestQueue = [];
     let activeRequests = 0;
+    let providerRefreshTimestamps = { kmb: null, lwb: null, ctb: null };
 
     function debounce(func, delay = 300) {
       let timer;
@@ -486,13 +487,34 @@
     setInterval(updateClock, 1000);
     updateClock();
 
+    function formatClockTime(timestamp, withSeconds = false) {
+      if (!timestamp) return '--:--' + (withSeconds ? ':--' : '');
+      const d = new Date(timestamp);
+      if (!Number.isFinite(d.getTime())) return '--:--' + (withSeconds ? ':--' : '');
+      return withSeconds
+        ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+        : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+
+    function markProviderRefresh(providerId) {
+      const id = normalizeProvider(providerId);
+      providerRefreshTimestamps[id] = Date.now();
+      const ctbEl = document.getElementById('ctb-updated');
+      if (ctbEl) ctbEl.textContent = `CTB 更新 ${formatClockTime(providerRefreshTimestamps.ctb, true)}`;
+      const lastEl = document.getElementById('last-updated');
+      if (lastEl) {
+        const kmb = providerRefreshTimestamps.kmb;
+        const lwb = providerRefreshTimestamps.lwb;
+        const parts = [];
+        if (kmb) parts.push(`KMB ${formatClockTime(kmb)}`);
+        if (lwb) parts.push(`LWB ${formatClockTime(lwb)}`);
+        lastEl.textContent = parts.length ? parts.join(' · ') : 'KMB/LWB 更新 --:--';
+      }
+    }
+
     function updateLastUpdated(providerIds = ['kmb']) {
       const ids = Array.isArray(providerIds) ? providerIds : [providerIds];
-      const labels = [...new Set(ids.map(normalizeProvider).map(id => getProvider(id).label))];
-      const now = new Date();
-      const timeText = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      document.getElementById('last-updated').textContent =
-        `${labels.join(' + ')} 更新 ${timeText}`;
+      ids.forEach(id => markProviderRefresh(id));
     }
 
     function getCompanyColours(providerIds) {
@@ -581,34 +603,23 @@
         if (cached) {
           const { timestamp, data } = JSON.parse(cached);
           if (Date.now() - timestamp < ROUTE_DB_TTL && data) {
-            routeDb = data;
+            routeDb = { kmb: data.kmb || {}, lwb: data.lwb || {}, ctb: data.ctb || {} };
             return routeDb;
           }
         }
-      } catch (e) {
-        /* Ignore malformed/stale cache. */
-      }
+      } catch (e) {}
 
+      const db = { kmb: {}, lwb: {}, ctb: {} };
       try {
-        const [kmbJson, ctbJson] = await Promise.all([
-          fetchJson(`${getProviderApiBase('kmb')}/route-stop`),
-          fetchJson('https://rt.data.gov.hk/v1/transport/citybus-nwfb/route-stop/ctb')
-        ]);
-
-        // Keep route-stop data separated by operator. KMB/LWB and CTB have
-        // different API schemas and may share route numbers.
-        const db = { kmb: {}, lwb: {}, ctb: {} };
-
+        const kmbJson = await fetchJson(`${getProviderApiBase('kmb')}/route-stop`);
         extractData(kmbJson).forEach(item => {
           if (!item?.route || !item?.stop) return;
           const provider = normalizeProvider(item.co);
           const route = String(item.route).toUpperCase();
-          if (!db[provider]) db[provider] = {};
           if (!db[provider][route]) db[provider][route] = [];
-
           db[provider][route].push({
             route,
-            stopId: item.stop,
+            stopId: String(item.stop),
             seq: parseInt(item.seq, 10) || 0,
             dir: normalizeDirection(item.dir || item.bound),
             serviceType: normalizeServiceType(item.service_type),
@@ -616,34 +627,89 @@
             providerCode: getProvider(provider).code
           });
         });
+      } catch (e) {}
 
-        // CTB Route-Stop API fields are explicitly: co, route, dir, seq, stop.
-        extractData(ctbJson).forEach(item => {
-          if (!item?.route || !item?.stop) return;
-          const provider = 'ctb';
-          const route = String(item.route).toUpperCase();
-          if (!db.ctb[route]) db.ctb[route] = [];
+      routeDb = db;
+      try {
+        localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: Date.now(), data: db }));
+      } catch (e) {}
+      return routeDb;
+    }
 
-          db.ctb[route].push({
-            route,
-            stopId: String(item.stop).padStart(6, '0'),
-            seq: parseInt(item.seq, 10) || 0,
-            dir: normalizeDirection(item.dir),
-            serviceType: 1,
-            provider,
-            providerCode: 'CTB'
+    async function fetchCtbRouteStops(route) {
+      const routeKey = String(route || '').trim().toUpperCase();
+      if (!routeKey) return [];
+
+      await getOrFetchRouteDB();
+      if (routeDb.ctb[routeKey]?.length) return routeDb.ctb[routeKey];
+
+      const results = [];
+      for (const direction of ['inbound', 'outbound']) {
+        try {
+          const url = `https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(routeKey)}/${direction}`;
+          const json = await fetchWithCache(url);
+          extractData(json).forEach(item => {
+            if (!item?.route || !item?.stop) return;
+            results.push({
+              route: String(item.route).toUpperCase(),
+              stopId: String(item.stop).padStart(6, '0'),
+              seq: parseInt(item.seq, 10) || 0,
+              dir: normalizeDirection(item.dir),
+              serviceType: 1,
+              provider: 'ctb',
+              providerCode: 'CTB'
+            });
           });
-        });
-
-        routeDb = db;
-        localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({
-          timestamp: Date.now(),
-          data: db
-        }));
-        return db;
-      } catch (e) {
-        return { kmb: {}, lwb: {}, ctb: {} };
+        } catch (e) {}
       }
+
+      routeDb.ctb[routeKey] = results;
+      try {
+        localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: Date.now(), data: routeDb }));
+      } catch (e) {}
+      return results;
+    }
+
+    async function findRouteStopsAcrossProviders(query) {
+      const q = String(query || '').trim().toUpperCase();
+      const db = await getOrFetchRouteDB();
+      const targetStops = [];
+
+      // KMB/LWB route-stop database is already loaded.
+      Object.entries(db.kmb).forEach(([route, rows]) => {
+        if (route.includes(q)) targetStops.push(...rows);
+      });
+      Object.entries(db.lwb).forEach(([route, rows]) => {
+        if (route.includes(q)) targetStops.push(...rows);
+      });
+
+      // CTB uses the current V2 API. V1 route-stop was discontinued; load only
+      // matching CTB routes on demand instead of downloading hundreds of routes.
+      try {
+        const routeList = await fetchWithCache('https://rt.data.gov.hk/v2/transport/citybus/route/CTB');
+        const matchingCtbRoutes = [...new Set(extractData(routeList)
+          .map(x => String(x.route || '').toUpperCase())
+          .filter(Boolean)
+          .filter(route => route.includes(q)))];
+
+        const exactRoutes = matchingCtbRoutes.filter(route => route === q);
+        const partialRoutes = matchingCtbRoutes
+          .filter(route => route !== q)
+          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+        const limitedRoutes = [...exactRoutes, ...partialRoutes]
+          .slice(0, exactRoutes.length ? 1 : 8);
+
+        const ctbRows = await Promise.all(limitedRoutes.map(route => fetchCtbRouteStops(route)));
+        ctbRows.flat().forEach(row => targetStops.push(row));
+      } catch (e) {}
+
+      const seen = new Set();
+      return targetStops.filter(row => {
+        const key = `${row.provider}|${row.stopId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
     }
 
     function loadSavedRoutes() {
@@ -873,33 +939,11 @@
             return;
           }
 
-          const db = await getOrFetchRouteDB();
-          let targetStops = [];
-
-          if (db[value]) {
-            targetStops = db[value].map(s => ({
-              stopId: s.stopId,
-              provider: s.provider || 'kmb'
-            }));
-          } else {
-            const matchingRoutes = Object.keys(db).filter(r => r.includes(value));
-            const seen = new Set();
-
-            matchingRoutes.forEach(route => {
-              db[route].forEach(s => {
-                const key = `${s.provider || 'kmb'}|${s.stopId}`;
-                if (!seen.has(key)) {
-                  seen.add(key);
-                  targetStops.push({
-                    stopId: s.stopId,
-                    provider: s.provider || 'kmb'
-                  });
-                }
-              });
-            });
-
-            targetStops = targetStops.slice(0, 80);
-          }
+          const rows = await findRouteStopsAcrossProviders(value);
+          let targetStops = rows.map(s => ({
+            stopId: s.stopId,
+            provider: s.provider || 'kmb'
+          })).slice(0, 80);
 
           if (targetStops.length === 0) {
             document.getElementById('eta-container').innerHTML =
@@ -1010,7 +1054,7 @@
 
     async function fetchCtbStops() {
       try {
-        const json = await fetchJson('https://rt.data.gov.hk/v1/transport/citybus-nwfb/stop');
+        const json = await fetchJson('https://rt.data.gov.hk/v2/transport/citybus/stop');
         return extractData(json).map(stop => ({
           ...stop,
           provider: 'ctb',
@@ -1179,9 +1223,12 @@
     }
 
     async function fetchCtbStopEta(stopId) {
-      const url = `https://rt.data.gov.hk/v1/transport/batch/stop-eta/CTB/${encodeURIComponent(String(stopId).padStart(6, '0'))}?lang=zh-hant`;
+      const safeStop = encodeURIComponent(String(stopId).padStart(6, '0'));
+      const url = `https://rt.data.gov.hk/v1/transport/batch/stop-eta/CTB/${safeStop}?lang=zh-hant`;
       try {
-        return await fetchWithCache(url);
+        const json = await fetchWithCache(url);
+        markProviderRefresh('ctb');
+        return json;
       } catch (error) {
         return { data: [] };
       }
@@ -1189,21 +1236,14 @@
 
     async function fetchCtbRouteEta(stopId, route) {
       const safeStop = encodeURIComponent(String(stopId).padStart(6, '0'));
-      const safeRoute = encodeURIComponent(route);
+      const safeRoute = encodeURIComponent(String(route).toUpperCase());
       const url = `https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${safeStop}/${safeRoute}`;
       try {
         const json = await fetchWithCache(url);
-        if (extractData(json).length > 0) return json;
-
-        // Fallback to the official consolidated stop-ETA API. This is useful
-        // for CTB routes where the route-specific V2 response has no rows.
-        return await fetchCtbStopEta(stopId);
+        markProviderRefresh('ctb');
+        return json;
       } catch (error) {
-        try {
-          return await fetchCtbStopEta(stopId);
-        } catch (fallbackError) {
-          return { data: [] };
-        }
+        return { data: [] };
       }
     }
 
@@ -1331,7 +1371,9 @@
             if (task.dir && item.dir && item.dir !== task.dir) return;
 
             const savedMatch = savedMatches.find(saved =>
-              saved.dir ? saved.dir === item.dir : true
+              task.provider === 'ctb'
+                ? true
+                : (saved.dir ? saved.dir === item.dir : true)
             );
 
             if (!savedMatch) return;
