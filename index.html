@@ -934,7 +934,7 @@
       const warnings = Array.isArray(warnsum?.details) ? warnsum.details : [];
       const warningActive = warnings.length > 0 || !!warnsum?.warning;
       const temp = Number(rhr?.temperature?.data?.[0]?.value);
-      const humidity = Number(rhr?.humidity?.data?.[0]?.value);
+      const rainProbability = Number(rhr?.rainProbability?.data?.[0]?.value);
       const icon = Array.isArray(rhr?.icon) ? rhr.icon[0] : rhr?.icon;
       const currentWeather = getHkoWeatherLabel(icon);
       const currentEmoji = getWeatherEmoji(icon);
@@ -976,7 +976,7 @@
         advice,
         cls,
         psr,
-        summary: `${currentEmoji} ${Number.isFinite(temp) ? `${temp}°C` : '--°C'} · ${currentWeather}${Number.isFinite(humidity) ? ` · ${humidity}% 濕度` : ''}`,
+        summary: `${currentEmoji} ${Number.isFinite(temp) ? `${temp}°C` : '--°C'} · ${currentWeather}${Number.isFinite(rainProbability) ? ` · ${rainProbability}% 降雨` : ''}`,
         detail: '天文台'
       };
     }
