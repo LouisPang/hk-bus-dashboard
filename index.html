@@ -1460,96 +1460,102 @@ function updateSearchVisibility() {
     return tasks;
   }
 
-  async function fetchEtas() {
-    if (!activeStopIds.length) return;
+async function fetchEtas() {
+  if (!activeStopIds.length) return;
 
-    const routeMap = {};
-    const now = new Date();
-    const generatedTimestamps = new Set();
-    const searchInput = document.getElementById('nearby-search');
-    const searchQuery = currentMode === 'nearby' && searchInput ? searchInput.value.trim().toUpperCase() : '';
+  const routeMap = {};
+  const now = new Date();
+  const generatedTimestamps = new Set();
+  const searchInput = document.getElementById('nearby-search');
+  const searchQuery = currentMode === 'nearby' && searchInput ? searchInput.value.trim().toUpperCase() : '';
 
-    if (currentMode === 'daily' && savedRoutes.length > 0) {
-      const tasks = buildDailyTasks();
-      const responses = await Promise.all(
-        tasks.map(async task => {
-          try {
-            const json = task.provider === 'ctb'
-              ? await fetchCtbRouteEta(task.stopId, task.route)
-              : await fetchKmbRouteEta(task.stopId, task.route, task.serviceType);
-            return { task, json, items: extractData(json) };
-          } catch (error) { return { task, json: null, items: [] }; }
-        })
+  if (currentMode === 'daily' && savedRoutes.length > 0) {
+    const tasks = buildDailyTasks();
+    const responses = await Promise.all(
+      tasks.map(async task => {
+        try {
+          const json = normalizeProvider(task.provider) === 'ctb'
+            ? await fetchCtbRouteEta(task.stopId, task.route)
+            : await fetchKmbRouteEta(task.stopId, task.route, task.serviceType);
+          return { task, json, items: extractData(json) };
+        } catch (error) { return { task, json: null, items: [] }; }
+      })
+    );
+
+    responses.forEach(({ task, json, items }) => {
+      if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
+      const savedMatches = savedRoutes.filter(saved =>
+        saved.stopId === task.stopId &&
+        normalizeProvider(saved.provider) === normalizeProvider(task.provider) &&
+        String(saved.route).toUpperCase() === String(task.route).toUpperCase() &&
+        normalizeServiceType(saved.serviceType) === task.serviceType
       );
 
-      responses.forEach(({ task, json, items }) => {
-        if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
-        const savedMatches = savedRoutes.filter(saved =>
-          saved.stopId === task.stopId &&
-          normalizeProvider(saved.provider) === task.provider &&
-          String(saved.route).toUpperCase() === String(task.route).toUpperCase() &&
-          normalizeServiceType(saved.serviceType) === task.serviceType
-        );
-
-        items.forEach(rawItem => {
-          const item = normalizeEtaItem(rawItem, {
-            provider: task.provider,
-            stopId: task.stopId,
-            route: task.route,
-            serviceType: task.serviceType,
-            dir: task.dir,
-            dest: task.dest,
-            generatedTimestamp: json?.generated_timestamp || ''
-          });
-
-          if (item.provider !== task.provider) return;
-          if (item.route.toUpperCase() !== String(task.route).toUpperCase()) return;
-          if (task.dir && item.dir && item.dir !== task.dir) return;
-
-          const savedMatch = savedMatches.find(saved => task.provider === 'ctb' ? true : (saved.dir ? saved.dir === item.dir : true));
-          if (!savedMatch) return;
-
-          addEtaRecord(routeMap, item, now);
+      items.forEach(rawItem => {
+        const item = normalizeEtaItem(rawItem, {
+          provider: normalizeProvider(task.provider),
+          stopId: task.stopId,
+          route: task.route,
+          serviceType: task.serviceType,
+          dir: task.dir,
+          dest: task.dest,
+          generatedTimestamp: json?.generated_timestamp || ''
         });
+
+        if (normalizeProvider(item.provider) !== normalizeProvider(task.provider)) return;
+        if (item.route.toUpperCase() !== String(task.route).toUpperCase()) return;
+        if (task.dir && item.dir && item.dir !== task.dir) return;
+
+        const savedMatch = savedMatches.find(saved => normalizeProvider(task.provider) === 'ctb' ? true : (saved.dir ? saved.dir === item.dir : true));
+        if (!savedMatch) return;
+
+        addEtaRecord(routeMap, item, now);
       });
-    } else {
-      const stopTasks = [...new Map(activeStopIds.map(item => [`${normalizeProvider(item.provider)}|${item.stopId}`, item])).values()];
-      const responses = await Promise.all(
-        stopTasks.map(async task => {
-          try {
-            const json = task.provider === 'ctb'
-              ? await fetchCtbStopEta(task.stopId)
-              : await fetchKmbStopEta(task.stopId);
-            return { task, json, items: extractData(json) };
-          } catch (error) { return { task, json: null, items: [] }; }
-        })
-      );
-
-      responses.forEach(({ task, json, items }) => {
-        if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
-        items.forEach(rawItem => {
-          const item = normalizeEtaItem(rawItem, {
-            provider: task.provider,
-            stopId: task.stopId,
-            generatedTimestamp: json?.generated_timestamp || ''
-          });
-
-          if (item.provider !== task.provider) return;
-          if (searchQuery && !item.route.toUpperCase().includes(searchQuery)) return;
-
-          addEtaRecord(routeMap, item, now);
-        });
-      });
-    }
-
-    const groupedList = Object.values(routeMap).map(r => {
-      r.etas.sort((a, b) => a.minutes - b.minutes);
-      return r;
     });
+  } else {
+    // Group stop tasks using normalized provider name
+    const stopTasks = [...new Map(activeStopIds.map(item => [
+      `${normalizeProvider(item.provider)}|${item.stopId}`,
+      { ...item, normProvider: normalizeProvider(item.provider) }
+    ])).values()];
 
-    renderEtas(groupedList, generatedTimestamps);
-    updateLastUpdated([...new Set(groupedList.map(item => item.provider))]);
+    const responses = await Promise.all(
+      stopTasks.map(async task => {
+        try {
+          const json = task.normProvider === 'ctb'
+            ? await fetchCtbStopEta(task.stopId)
+            : await fetchKmbStopEta(task.stopId);
+          return { task, json, items: extractData(json) };
+        } catch (error) { return { task, json: null, items: [] }; }
+      })
+    );
+
+    responses.forEach(({ task, json, items }) => {
+      if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
+      items.forEach(rawItem => {
+        const item = normalizeEtaItem(rawItem, {
+          provider: task.normProvider,
+          stopId: task.stopId,
+          generatedTimestamp: json?.generated_timestamp || ''
+        });
+
+        // Use normalized provider check to prevent dropping KMB/LWB results
+        if (normalizeProvider(item.provider) !== task.normProvider) return;
+        if (searchQuery && !item.route.toUpperCase().includes(searchQuery)) return;
+
+        addEtaRecord(routeMap, item, now);
+      });
+    });
   }
+
+  const groupedList = Object.values(routeMap).map(r => {
+    r.etas.sort((a, b) => a.minutes - b.minutes);
+    return r;
+  });
+
+  renderEtas(groupedList, generatedTimestamps);
+  updateLastUpdated([...new Set(groupedList.map(item => item.provider))]);
+}
 
   function addEtaRecord(routeMap, item, now) {
     if (!item.route || !item.stop) return;
