@@ -880,64 +880,49 @@
     try { return await ctbRouteStopLoadPromise; } finally { ctbRouteStopLoadPromise = null; }
   }
 
-  async function findRouteStopsAcrossProviders(query) {
-    const q = String(query || '').trim().toUpperCase();
-    const db = await getOrFetchRouteDB();
+async function findRouteStopsAcrossProviders(query) {
+  const q = String(query || '').trim().toUpperCase();
+  const db = await getOrFetchRouteDB();
 
-    try { await loadCtbRouteStopDatabase(false); } catch (e) {}
+  // Load CTB route-stop database if not already cached
+  try { await loadCtbRouteStopDatabase(false); } catch (e) {}
 
-    if (!Object.keys(db.kmb || {}).length && !Object.keys(db.lwb || {}).length) {
-      try {
-        const kmbJson = await fetchJson(`${getProviderApiBase('kmb')}/route-stop`);
-        extractData(kmbJson).forEach(item => {
-          if (!item?.route || !item?.stop) return;
-          const provider = normalizeProvider(item.co);
-          const targetProvider = provider === 'lwb' ? 'lwb' : 'kmb';
-          const route = String(item.route).toUpperCase();
-          if (!db[targetProvider][route]) db[targetProvider][route] = [];
-          db[targetProvider][route].push({
-            route,
-            stopId: String(item.stop),
-            seq: parseInt(item.seq, 10) || 0,
-            dir: normalizeDirection(item.dir || item.bound),
-            serviceType: normalizeServiceType(item.service_type),
-            provider: targetProvider,
-            providerCode: getProvider(targetProvider).code
-          });
-        });
-        routeDb = db;
-      } catch (e) {}
-    }
+  const targetStops = [];
 
-    const targetStops = [];
-    const addMatches = (providerName) => {
-      Object.entries(db[providerName] || {}).forEach(([route, rows]) => {
-        if (route.includes(q)) rows.forEach(row => targetStops.push(row));
-      });
-    };
-
-    addMatches('kmb');
-    addMatches('lwb');
-    addMatches('ctb');
-
-    const seen = new Set();
-    const unique = targetStops.filter(row => {
-      const key = `${row.provider}|${row.stopId}|${row.route}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
+  // Helper function to search a specific provider's database
+  const addMatches = (providerName) => {
+    Object.entries(db[providerName] || {}).forEach(([route, rows]) => {
+      if (route.includes(q)) {
+        rows.forEach(row => targetStops.push(row));
+      }
     });
+  };
 
-    unique.sort((a, b) => {
-      const aExact = String(a.route).toUpperCase() === q ? 0 : 1;
-      const bExact = String(b.route).toUpperCase() === q ? 0 : 1;
-      if (aExact !== bExact) return aExact - bExact;
-      const providerOrder = { ctb: 0, kmb: 1, lwb: 2 };
-      return (providerOrder[a.provider] ?? 9) - (providerOrder[b.provider] ?? 9);
-    });
+  // Search across ALL providers
+  addMatches('kmb');
+  addMatches('lwb');
+  addMatches('ctb');
 
-    return unique;
-  }
+  // Deduplicate results
+  const seen = new Set();
+  const unique = targetStops.filter(row => {
+    const key = `${row.provider}|${row.stopId}|${row.route}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // Sort exact route matches to the top
+  unique.sort((a, b) => {
+    const aExact = String(a.route).toUpperCase() === q ? 0 : 1;
+    const bExact = String(b.route).toUpperCase() === q ? 0 : 1;
+    if (aExact !== bExact) return aExact - bExact;
+    const providerOrder = { kmb: 0, ctb: 1, lwb: 2 };
+    return (providerOrder[a.provider] ?? 9) - (providerOrder[b.provider] ?? 9);
+  });
+
+  return unique;
+}
 
   async function fetchWeather() {
     try {
