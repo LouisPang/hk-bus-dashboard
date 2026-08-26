@@ -856,10 +856,23 @@
 
     function renderEtas(routes) {
       const container = document.getElementById('eta-container');
+      const searchInput = document.getElementById('nearby-search');
+      const searchQuery = (currentMode === 'nearby' && searchInput)
+        ? searchInput.value.trim().toUpperCase()
+        : '';
+
+      // Filter for search: If exact match exists, show ONLY exact match route
+      if (searchQuery) {
+        const hasExactMatch = routes.some(r => r.route.toUpperCase() === searchQuery);
+        if (hasExactMatch) {
+          routes = routes.filter(r => r.route.toUpperCase() === searchQuery);
+        } else {
+          routes = routes.filter(r => r.route.toUpperCase().includes(searchQuery));
+        }
+      }
+
       if (routes.length === 0) {
-        const searchInput = document.getElementById('nearby-search');
-        const query = searchInput && currentMode === 'nearby' ? searchInput.value.trim() : '';
-        container.innerHTML = `<div class="status-msg">${query ? '沒有符合搜尋條件的巴士。' : '沒有即將到達的巴士。'}</div>`;
+        container.innerHTML = `<div class="status-msg">${searchQuery ? '沒有符合搜尋條件的巴士。' : '沒有即將到達的巴士。'}</div>`;
         return;
       }
 
@@ -876,10 +889,6 @@
         }
         stopsMap.get(stopId).items.push(r);
       });
-
-      const searchQuery = (currentMode === 'nearby' && document.getElementById('nearby-search'))
-        ? document.getElementById('nearby-search').value.trim().toUpperCase()
-        : '';
 
       const isExactMatch = (routeStr) => searchQuery && routeStr.toUpperCase() === searchQuery;
 
