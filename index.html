@@ -1603,10 +1603,17 @@
       });
     }
 
-    const groupedList = Object.values(routeMap).map(r => {
-      r.etas.sort((a, b) => a.minutes - b.minutes);
-      return r;
-    });
+// Add a filter step at the end of fetchEtas() before passing data to renderEtas()
+const groupedList = Object.values(routeMap)
+  .filter(r => {
+    // If it's a dummy placeholder with no route number and no ETAs, discard it
+    if (r.route === '---' && r.etas.length === 0) return false;
+    return true;
+  })
+  .map(r => {
+    r.etas.sort((a, b) => a.minutes - b.minutes);
+    return r;
+  });
 
     if (generation !== etaRefreshGeneration) return;
 
