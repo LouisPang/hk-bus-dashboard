@@ -795,7 +795,19 @@
       const resolvedResponses = stopResponses.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
 
       resolvedResponses.forEach(({ stopId, provider, items }) => {
-        const stopLabel = stopMetaMap[stopId] || '此站';
+        let stopLabel = stopMetaMap[stopId];
+
+        if (!stopLabel && savedRoutes.length > 0) {
+          const savedMatch = savedRoutes.find(s => s.stopId === stopId);
+          if (savedMatch && savedMatch.stopName && savedMatch.stopName !== '此站') {
+            stopLabel = savedMatch.stopName;
+          }
+        }
+
+        if (!stopLabel) {
+          stopLabel = `站點 (${stopId})`;
+        }
+
         const stopInfo = allStops.find(stop => stop && stop.stop === stopId);
         const stopDistance = userLocation && stopInfo
           ? getDistanceKm(userLocation.lat, userLocation.lng, parseFloat(stopInfo.lat), parseFloat(stopInfo.long))
