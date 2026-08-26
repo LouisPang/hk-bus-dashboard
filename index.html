@@ -873,19 +873,10 @@
         });
       });
 
-      const groupedList = Object.values(routeMap)
-        .map(r => {
-          r.etas.sort((a, b) => a - b);
-          return r;
-        })
-        .sort((a, b) => {
-          const distanceDiff = (a.stopDistance ?? Number.POSITIVE_INFINITY) - (b.stopDistance ?? Number.POSITIVE_INFINITY);
-          if (distanceDiff !== 0) return distanceDiff;
-          if (a.etas.length === 0 && b.etas.length === 0) return 0;
-          if (a.etas.length === 0) return 1;
-          if (b.etas.length === 0) return -1;
-          return a.etas[0] - b.etas[0];
-        });
+      const groupedList = Object.values(routeMap).map(r => {
+        r.etas.sort((a, b) => a - b);
+        return r;
+      });
 
       renderEtas(groupedList);
       updateLastUpdated('kmb');
@@ -914,10 +905,43 @@
         stopsMap.get(stopId).items.push(r);
       });
 
-      container.innerHTML = [...stopsMap.values()].map(({ stopId, stopName, stopDistance, items }) => {
+      // Rank stops strictly by EARLIEST ETA TIME (soonest arriving bus first)
+      const sortedStops = [...stopsMap.values()].sort((a, b) => {
+        const getMinEta = (stop) => {
+          let min = Infinity;
+          stop.items.forEach(item => {
+            if (item.etas && item.etas.length > 0 && item.etas[0] < min) {
+              min = item.etas[0];
+            }
+          });
+          return min;
+        };
+
+        const minEtaA = getMinEta(a);
+        const minEtaB = getMinEta(b);
+
+        // 1. Primary sort: Soonest ETA first
+        if (minEtaA !== minEtaB) return minEtaA - minEtaB;
+
+        // 2. Secondary sort: Distance tie-breaker
+        const distA = Number.isFinite(a.stopDistance) ? a.stopDistance : Infinity;
+        const distB = Number.isFinite(b.stopDistance) ? b.stopDistance : Infinity;
+        if (distA !== distB) return distA - distB;
+
+        return a.stopName.localeCompare(b.stopName, 'zh-HK');
+      });
+
+      container.innerHTML = sortedStops.map(({ stopId, stopName, stopDistance, items }) => {
         const stopDistanceText = Number.isFinite(stopDistance)
           ? `${Math.round(stopDistance * 1000)}m`
           : '站點';
+
+        // Sort individual routes inside each block by ETA time ascending
+        items.sort((a, b) => {
+          const etaA = (a.etas && a.etas.length > 0) ? a.etas[0] : Infinity;
+          const etaB = (b.etas && b.etas.length > 0) ? b.etas[0] : Infinity;
+          return etaA - etaB;
+        });
 
         const cardMarkup = items.map(r => {
           const firstEta = r.etas[0];
