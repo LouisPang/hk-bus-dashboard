@@ -181,7 +181,7 @@
       background: rgba(255, 255, 255, 0.02);
       border: 1px solid var(--border);
       border-radius: 16px;
-      overflow: visible;
+      overflow: hidden;
       display: flex;
       flex-direction: column;
       margin-bottom: 8px;
@@ -215,103 +215,100 @@
     .stop-card-list {
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      padding: 8px;
+      padding: 0;
     }
 
-  .eta-card {
-    background: transparent;
-    border: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 0;
-    padding: 8px 12px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    height: 52px;
-    min-height: 52px;
-    max-height: 52px;
-  }
-  
-  .eta-card:last-child {
-    border-bottom: none;
-  }
-  
-  .route-info {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-    flex: 1;
-  }
-  
-  /* Sleek Badge */
-  .route-badge {
-    color: #fff;
-    font-size: 1.2rem;
-    font-weight: 800;
-    padding: 3px 8px;
-    border-radius: 6px;
-    min-width: 58px;
-    text-align: center;
-    line-height: 1;
-    flex-shrink: 0;
-  }
-  
-  .destination {
-    font-size: 1rem;
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  
-  .eta-times {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    text-align: right;
-  }
-  
-  .eta-primary {
-    font-size: 1.4rem;
-    font-weight: 800;
-    line-height: 1;
-    white-space: nowrap;
-  }
-  
-  .eta-primary .unit {
-    font-size: 0.8rem;
-    font-weight: 600;
-    margin-left: 1px;
-  }
-  
-  .eta-secondary {
-    font-size: 0.75rem;
-    color: var(--subtext);
-    font-weight: 500;
-    white-space: nowrap;
-  }
-  
-  /* Minimal Star Action Button */
-  .save-route-btn {
-    background: transparent;
-    color: var(--subtext);
-    border: none;
-    font-size: 1.3rem;
-    cursor: pointer;
-    padding: 4px;
-    line-height: 1;
-    transition: transform 0.1s ease, color 0.1s ease;
-  }
-  
-  .save-route-btn.saved {
-    color: var(--accent);
-  }
-  
-  .save-route-btn:active {
-    transform: scale(1.2);
-  }
+    .eta-card {
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 0;
+      padding: 8px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      height: 52px;
+      min-height: 52px;
+      max-height: 52px;
+    }
+
+    .eta-card:last-child {
+      border-bottom: none;
+    }
+
+    .route-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .route-badge {
+      color: #fff;
+      font-size: 1.2rem;
+      font-weight: 800;
+      padding: 3px 8px;
+      border-radius: 6px;
+      min-width: 58px;
+      text-align: center;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .destination {
+      font-size: 1rem;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .eta-times {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-align: right;
+    }
+
+    .eta-primary {
+      font-size: 1.4rem;
+      font-weight: 800;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .eta-primary .unit {
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-left: 1px;
+    }
+
+    .eta-secondary {
+      font-size: 0.75rem;
+      color: var(--subtext);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .save-route-btn {
+      background: transparent;
+      color: var(--subtext);
+      border: none;
+      font-size: 1.3rem;
+      cursor: pointer;
+      padding: 4px;
+      line-height: 1;
+      transition: transform 0.1s ease, color 0.1s ease;
+    }
+
+    .save-route-btn.saved {
+      color: var(--accent);
+    }
+
+    .save-route-btn:active {
+      transform: scale(1.2);
+    }
 
     .due { color: var(--urgent); animation: pulse 1.5s infinite; }
     .urgent { color: var(--urgent); }
@@ -379,7 +376,6 @@
     const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
     const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db';
     const ROUTE_DB_TTL = 86400000; // 24 Hours Cache
-    const MAX_ROUTE_CARDS = Number.MAX_SAFE_INTEGER;
     const PROVIDERS = [
       { id: 'kmb', label: 'KMB', api: 'https://data.etabus.gov.hk/v1/transport/kmb' },
       { id: 'lwb', label: 'LWB', api: 'https://data.etabus.gov.hk/v1/transport/kmb' }
@@ -395,9 +391,7 @@
     let currentMode = 'daily';
     let etaPollTimer = null;
     let savedRoutes = [];
-    let latestNearbyRoutes = [];
 
-    // --- Utility: Debounce ---
     function debounce(func, delay = 300) {
       let timer;
       return (...args) => {
@@ -437,7 +431,6 @@
       return companyMap.kmb;
     }
 
-    // --- Route Database (Fact Table) Caching ---
     async function getOrFetchRouteDB() {
       if (routeDb) return routeDb;
       try {
@@ -617,7 +610,6 @@
         });
       });
 
-      // --- Fast Search Handler using Debounce and Route DB ---
       const searchInput = document.getElementById('nearby-search');
       if (searchInput) {
         searchInput.addEventListener('input', debounce(async (event) => {
@@ -630,15 +622,12 @@
             return;
           }
 
-          // Query static local Fact Table instantly
           const db = await getOrFetchRouteDB();
           let targetStops = [];
 
           if (db[value]) {
-            // Exact Route match (Target ~20-40 stops max instead of 6,000!)
             targetStops = db[value].map(s => ({ stopId: s.stopId, provider: 'kmb' }));
           } else {
-            // Partial route search (Prefix matching)
             const matchingRoutes = Object.keys(db).filter(r => r.includes(value));
             const stopSet = new Set();
             matchingRoutes.forEach(r => db[r].forEach(s => stopSet.add(s.stopId)));
@@ -667,7 +656,8 @@
           const provider = target.dataset.provider || 'kmb';
           addSavedRoute(route, dest, stopId, provider);
           target.dataset.action = 'remove-saved-route';
-          target.textContent = '移除';
+          target.textContent = '★';
+          target.classList.add('saved');
           return;
         }
 
@@ -678,7 +668,8 @@
           const provider = target.dataset.provider || 'kmb';
           removeSavedRoute(getSavedRouteKey(route, dest, stopId, provider));
           target.dataset.action = 'save-route';
-          target.textContent = '儲存';
+          target.textContent = '☆';
+          target.classList.remove('saved');
           return;
         }
 
@@ -699,7 +690,7 @@
       } catch (e) { /* ignore */ }
 
       await initStops();
-      getOrFetchRouteDB(); // Background pre-fetch Route DB
+      getOrFetchRouteDB();
 
       if (currentMode === 'daily') {
         if (savedRoutes.length > 0) {
@@ -894,85 +885,73 @@
       updateLastUpdated('kmb');
     }
 
-function renderEtas(routes) {
-  const container = document.getElementById('eta-container');
-  if (routes.length === 0) {
-    const searchInput = document.getElementById('nearby-search');
-    const query = searchInput && currentMode === 'nearby' ? searchInput.value.trim() : '';
-    container.innerHTML = `<div class="status-msg">${query ? '沒有符合搜尋條件的巴士。' : '沒有即將到達的巴士。'}</div>`;
-    return;
-  }
-
-  const stopsMap = new Map();
-  routes.forEach(r => {
-    const stopId = r.stopId || 'unknown';
-    if (!stopsMap.has(stopId)) {
-      stopsMap.set(stopId, {
-        stopId,
-        stopName: r.stopName || '站點資料未提供',
-        stopDistance: r.stopDistance,
-        items: []
-      });
-    }
-    stopsMap.get(stopId).items.push(r);
-  });
-
-  container.innerHTML = [...stopsMap.values()].map(({ stopId, stopName, stopDistance, items }) => {
-    const stopDistanceText = Number.isFinite(stopDistance)
-      ? `${Math.round(stopDistance * 1000)}m`
-      : '站點';
-
-    const cardMarkup = items.map(r => {
-      const firstEta = r.etas[0];
-      const nextEtas = r.etas.slice(1, 3).map(m => `+${m}`).join(' ');
-
-      let timeClass = 'safe';
-      let displayTime = `${firstEta}<span class="unit">分</span>`;
-
-      if (r.etas.length === 0) {
-        timeClass = 'muted';
-        displayTime = '暫無';
-      } else if (firstEta === 0) {
-        timeClass = 'due';
-        displayTime = '到站';
-      } else if (firstEta <= 3) {
-        timeClass = 'urgent';
-      } else if (firstEta <= 7) {
-        timeClass = 'warning';
+    function renderEtas(routes) {
+      const container = document.getElementById('eta-container');
+      if (routes.length === 0) {
+        const searchInput = document.getElementById('nearby-search');
+        const query = searchInput && currentMode === 'nearby' ? searchInput.value.trim() : '';
+        container.innerHTML = `<div class="status-msg">${query ? '沒有符合搜尋條件的巴士。' : '沒有即將到達的巴士。'}</div>`;
+        return;
       }
 
-      const provider = r.provider || 'kmb';
-      const isSaved = isSavedRoute(r.route, r.dest, stopId, provider);
-      const action = isSaved ? 'remove-saved-route' : 'save-route';
-      const starIcon = isSaved ? '★' : '☆';
-      const savedClass = isSaved ? 'saved' : '';
+      const stopsMap = new Map();
+      routes.forEach(r => {
+        const stopId = r.stopId || 'unknown';
+        if (!stopsMap.has(stopId)) {
+          stopsMap.set(stopId, {
+            stopId,
+            stopName: r.stopName || '站點資料未提供',
+            stopDistance: r.stopDistance,
+            items: []
+          });
+        }
+        stopsMap.get(stopId).items.push(r);
+      });
 
-      return `
-        <div class="eta-card">
-          <div class="route-info">
-            <div class="route-badge" style="background: ${getCompanyColours(provider)};">${r.route}</div>
-            <div class="destination">${r.dest}</div>
-          </div>
-          <div class="eta-times">
-            ${nextEtas ? `<div class="eta-secondary">${nextEtas}</div>` : ''}
-            <div class="eta-primary ${timeClass}">${displayTime}</div>
-            <button class="save-route-btn ${savedClass}" data-action="${action}" data-route="${r.route}" data-dest="${r.dest}" data-stop="${stopId}" data-provider="${provider}">${starIcon}</button>
-          </div>
-        </div>
-      `;
-    }).join('');
+      container.innerHTML = [...stopsMap.values()].map(({ stopId, stopName, stopDistance, items }) => {
+        const stopDistanceText = Number.isFinite(stopDistance)
+          ? `${Math.round(stopDistance * 1000)}m`
+          : '站點';
 
-    return `
-      <div class="stop-group">
-        <div class="stop-header">
-          <div class="stop-header-title">${stopName}</div>
-          <div class="stop-header-distance">${stopDistanceText}</div>
-        </div>
-        <div class="stop-card-list" style="padding: 0;">${cardMarkup}</div>
-      </div>
-    `;
-  }).join('');
-}
+        const cardMarkup = items.map(r => {
+          const firstEta = r.etas[0];
+          const nextEtas = r.etas.slice(1, 3).map(m => `+${m}`).join(' ');
+
+          let timeClass = 'safe';
+          let displayTime = `${firstEta}<span class="unit">分</span>`;
+
+          if (r.etas.length === 0) {
+            timeClass = 'muted';
+            displayTime = '暫無';
+          } else if (firstEta === 0) {
+            timeClass = 'due';
+            displayTime = '到站';
+          } else if (firstEta <= 3) {
+            timeClass = 'urgent';
+          } else if (firstEta <= 7) {
+            timeClass = 'warning';
+          }
+
+          const provider = r.provider || 'kmb';
+          const isSaved = isSavedRoute(r.route, r.dest, stopId, provider);
+          const action = isSaved ? 'remove-saved-route' : 'save-route';
+          const starIcon = isSaved ? '★' : '☆';
+          const savedClass = isSaved ? 'saved' : '';
+
+          return `
+            <div class="eta-card">
+              <div class="route-info">
+                <div class="route-badge" style="background: ${getCompanyColours(provider)};">${r.route}</div>
+                <div class="destination">${r.dest}</div>
+              </div>
+              <div class="eta-times">
+                ${nextEtas ? `<div class="eta-secondary">${nextEtas}</div>` : ''}
+                <div class="eta-primary ${timeClass}">${displayTime}</div>
+                <button class="save-route-btn ${savedClass}" data-action="${action}" data-route="${r.route}" data-dest="${r.dest}" data-stop="${stopId}" data-provider="${provider}">${starIcon}</button>
+              </div>
+            </div>
+          `;
+        }).join('');
 
         return `
           <div class="stop-group">
