@@ -882,54 +882,62 @@ function findClosestStationName(userLat, userLng, stationList) {
 async function fetchWeather() {
   try {
     const base = 'https://data.weather.gov.hk/weatherAPI/opendata/weather.php';
-    const [rhr, flw, warnsum] = await Promise.all([
+    
+    // Fetch all necessary datasets in parallel (including 9-day forecast for PSR)
+    const [rhr, flw, warnsum, fnd] = await Promise.all([
       fetchJson(`${base}?dataType=rhrread&lang=tc`),
       fetchJson(`${base}?dataType=flw&lang=tc`),
-      fetchJson(`${base}?dataType=warnsum&lang=tc`)
+      fetchJson(`${base}?dataType=warnsum&lang=tc`),
+      fetchJson(`${base}?dataType=fnd&lang=tc`)
     ]);
 
-    // 1. Resolve User Position & Match Nearest Station Dynamically
-    let locationLabel = '香港';
+    // 1. Determine Nearest HKO Station & Temperature
+    let stationName = '京士柏';
     let matchedTemp = null;
-
     const tempDataList = rhr?.temperature?.data || [];
 
     if (userLocation && tempDataList.length > 0) {
       const dynamicStations = await getHkoStationCoordinates();
       
       if (dynamicStations.length > 0) {
-        const nearestName = findClosestStationName(userLocation.lat, userLocation.lng, dynamicStations);
-        const stnData = tempDataList.find(s => s.place === nearestName);
+        const nearest = findClosestStationName(userLocation.lat, userLocation.lng, dynamicStations);
+        const stnData = tempDataList.find(s => s.place === nearest);
         if (stnData) {
-          locationLabel = stnData.place;
+          stationName = stnData.place;
           matchedTemp = stnData.value;
         }
       }
 
-      // If station coordinate map missing, match directly against location name from main dashboard
+      // Fallback matching if coordinates map fails
       if (!matchedTemp) {
-        const fallbackStn = tempDataList.find(s => s.place.includes('九龍') || s.place.includes('京士柏') || s.place.includes('天文台'));
-        if (fallbackStn) {
-          locationLabel = fallbackStn.place;
-          matchedTemp = fallbackStn.value;
-        } else {
-          matchedTemp = tempDataList[0]?.value;
-          locationLabel = tempDataList[0]?.place || '香港';
-        }
+        const fallbackStn = tempDataList.find(s => 
+          s.place.includes('九龍') || s.place.includes('京士柏') || s.place.includes('天文台')
+        );
+        stationName = fallbackStn?.place || tempDataList[0]?.place || '京士柏';
+        matchedTemp = fallbackStn?.value ?? tempDataList[0]?.value;
       }
     } else if (tempDataList.length > 0) {
+      stationName = tempDataList[0]?.place || '京士柏';
       matchedTemp = tempDataList[0]?.value;
-      locationLabel = tempDataList[0]?.place || '香港';
     }
 
-    currentTemp = Number.isFinite(Number(matchedTemp)) ? `${matchedTemp}°C` : '';
-    
-    // 2. Extract Detailed Metrics (Humidity, UV, Rainfall)
-    const humidity = rhr?.humidity?.data?.[0]?.value ? `相對濕度 ${rhr.humidity.data[0].value}%` : '';
-    const uvData = rhr?.uvindex?.data?.[0];
-    const uvText = uvData ? `UV ${uvData.value} (${uvData.desc})` : '';
+    currentTemp = Number.isFinite(Number(matchedTemp)) ? `${matchedTemp}°C` : '--°C';
 
-    // 3. Extract Specific Active Warnings (e.g., 雷暴警告, 黃色暴雨警告)
+    // 2. Extract Relative Humidity & PSR (Rain Probability)
+    const humidityVal = rhr?.humidity?.data?.[0]?.value;
+    const humidityText = humidityVal ? `相對濕度 ${humidityVal}%` : '';
+    
+    const todayForecast = fnd?.weatherForecast?.[0];
+    const psrText = todayForecast?.psr ? `降雨概率 ${todayForecast.psr}` : '';
+
+    // 3. Update Meta Header Line: [Station] • [Temp] • [Humidity] • [Rain %]
+    const metaParts = [stationName, currentTemp, humidityText, psrText].filter(Boolean);
+    const metaEl = document.getElementById('weather-meta');
+    if (metaEl) {
+      metaEl.textContent = metaParts.join(' • ');
+    }
+
+    // 4. Extract Active Warnings
     let warningNames = [];
     if (warnsum && typeof warnsum === 'object') {
       warningNames = Object.values(warnsum)
@@ -937,10 +945,7 @@ async function fetchWeather() {
         .filter(Boolean);
     }
 
-    // 4. Update Header Subtitle
-    updateMetaText(`${locationLabel} · ${humidity}${uvText ? ' · ' + uvText : ''}`);
-
-    // 5. Render Detailed Weather Commute Line
+    // 5. Render Weather Advice & Commute Container
     const summaryEl = document.getElementById('weather-summary');
     const adviceEl = document.getElementById('weather-advice');
     const commuteContainer = document.getElementById('weather-commute');
@@ -957,7 +962,9 @@ async function fetchWeather() {
     }
 
   } catch (e) {
-    renderWeatherAdvice({ summary: '☁️ 天氣資料暫時未能取得', advice: '請稍後再試', psr: 'NONE' });
+    console.error('Weather load error:', e);
+    const summaryEl = document.getElementById('weather-summary');
+    if (summaryEl) summaryEl.textContent = '☁️ 天氣資料暫時未能取得';
   }
 }
 
