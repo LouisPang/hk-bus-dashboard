@@ -838,31 +838,128 @@
 
     try { return await ctbRouteStopLoadPromise; } finally { ctbRouteStopLoadPromise = null; }
   }
+let cachedHkoStations = null;
 
-  async function fetchWeather() {
-    try {
-      const base = 'https://data.weather.gov.hk/weatherAPI/opendata/weather.php';
-      const [rhr, flw, fnd, warnsum] = await Promise.all([
-        fetchJson(`${base}?dataType=rhrread&lang=tc`),
-        fetchJson(`${base}?dataType=flw&lang=tc`),
-        fetchJson(`${base}?dataType=fnd&lang=tc`),
-        fetchJson(`${base}?dataType=warnsum&lang=tc`)
-      ]);
-      const temp = rhr?.temperature?.data?.[0]?.value;
-      currentTemp = Number.isFinite(Number(temp)) ? `${temp}°C` : '';
-      weatherState.updated = new Date();
-      weatherState.forecast = flw?.forecastDesc || '';
-      weatherState.outlook = flw?.outlook || '';
-      const advice = buildCommuteAdvice(rhr, flw, fnd, warnsum);
-      weatherState.psr = advice.psr;
-      weatherState.summary = advice.summary;
-      renderWeatherAdvice(advice);
-    } catch (e) {
-      currentTemp = '';
-      renderWeatherAdvice({ summary: '☁️ 天氣資料暫時未能取得', advice: '天氣資料暫時未能取得', psr: 'NONE' });
+async function getHkoStationCoordinates() {
+  if (cachedHkoStations) return cachedHkoStations;
+  try {
+    // Dynamically fetch station metadata from HKO GeoJSON/API endpoint
+    const res = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/opendata.php?dataType=CLIMSTAT&lang=tc');
+    const json = await res.json();
+    
+    // Fallback parser if using standard station list endpoint
+    if (Array.isArray(json)) {
+      cachedHkoStations = json.map(stn => ({
+        name: stn.stationNameTC || stn.stationName || stn.name,
+        lat: parseFloat(stn.latitude || stn.lat),
+        lng: parseFloat(stn.longitude || stn.lng || stn.lon)
+      })).filter(s => s.name && Number.isFinite(s.lat) && Number.isFinite(s.lng));
+      return cachedHkoStations;
     }
-    updateMetaText();
+  } catch (e) {
+    console.warn('Failed to dynamically fetch station list, using live RHRREAD payload matching');
   }
+  return [];
+}
+
+// Calculate distance dynamically between GPS and any station
+function findClosestStationName(userLat, userLng, stationList) {
+  if (!stationList || !stationList.length) return null;
+  
+  let closest = null;
+  let minDistance = Infinity;
+
+  stationList.forEach(stn => {
+    const dist = getDistanceKm(userLat, userLng, stn.lat, stn.lng);
+    if (dist < minDistance) {
+      minDistance = dist;
+      closest = stn.name;
+    }
+  });
+
+  return closest;
+}
+async function fetchWeather() {
+  try {
+    const base = 'https://data.weather.gov.hk/weatherAPI/opendata/weather.php';
+    const [rhr, flw, warnsum] = await Promise.all([
+      fetchJson(`${base}?dataType=rhrread&lang=tc`),
+      fetchJson(`${base}?dataType=flw&lang=tc`),
+      fetchJson(`${base}?dataType=warnsum&lang=tc`)
+    ]);
+
+    // 1. Resolve User Position & Match Nearest Station Dynamically
+    let locationLabel = '香港';
+    let matchedTemp = null;
+
+    const tempDataList = rhr?.temperature?.data || [];
+
+    if (userLocation && tempDataList.length > 0) {
+      const dynamicStations = await getHkoStationCoordinates();
+      
+      if (dynamicStations.length > 0) {
+        const nearestName = findClosestStationName(userLocation.lat, userLocation.lng, dynamicStations);
+        const stnData = tempDataList.find(s => s.place === nearestName);
+        if (stnData) {
+          locationLabel = stnData.place;
+          matchedTemp = stnData.value;
+        }
+      }
+
+      // If station coordinate map missing, match directly against location name from main dashboard
+      if (!matchedTemp) {
+        const fallbackStn = tempDataList.find(s => s.place.includes('九龍') || s.place.includes('京士柏') || s.place.includes('天文台'));
+        if (fallbackStn) {
+          locationLabel = fallbackStn.place;
+          matchedTemp = fallbackStn.value;
+        } else {
+          matchedTemp = tempDataList[0]?.value;
+          locationLabel = tempDataList[0]?.place || '香港';
+        }
+      }
+    } else if (tempDataList.length > 0) {
+      matchedTemp = tempDataList[0]?.value;
+      locationLabel = tempDataList[0]?.place || '香港';
+    }
+
+    currentTemp = Number.isFinite(Number(matchedTemp)) ? `${matchedTemp}°C` : '';
+    
+    // 2. Extract Detailed Metrics (Humidity, UV, Rainfall)
+    const humidity = rhr?.humidity?.data?.[0]?.value ? `相對濕度 ${rhr.humidity.data[0].value}%` : '';
+    const uvData = rhr?.uvindex?.data?.[0];
+    const uvText = uvData ? `UV ${uvData.value} (${uvData.desc})` : '';
+
+    // 3. Extract Specific Active Warnings (e.g., 雷暴警告, 黃色暴雨警告)
+    let warningNames = [];
+    if (warnsum && typeof warnsum === 'object') {
+      warningNames = Object.values(warnsum)
+        .map(w => w.name || w.code)
+        .filter(Boolean);
+    }
+
+    // 4. Update Header Subtitle
+    updateMetaText(`${locationLabel} · ${humidity}${uvText ? ' · ' + uvText : ''}`);
+
+    // 5. Render Detailed Weather Commute Line
+    const summaryEl = document.getElementById('weather-summary');
+    const adviceEl = document.getElementById('weather-advice');
+    const commuteContainer = document.getElementById('weather-commute');
+
+    if (warningNames.length > 0) {
+      if (summaryEl) summaryEl.textContent = `⚠️ 生效警告：${warningNames.join('、')}`;
+      if (adviceEl) adviceEl.textContent = flw?.generalSituation || '天氣變化不穩定，建議帶備雨具並留意交通狀況。';
+      if (commuteContainer) commuteContainer.className = 'weather-commute alert';
+    } else {
+      const forecastDesc = flw?.forecastDesc || '天氣大致良好';
+      if (summaryEl) summaryEl.textContent = `🌤️ ${forecastDesc.slice(0, 30)}...`;
+      if (adviceEl) adviceEl.textContent = flw?.outlook || '適合出行';
+      if (commuteContainer) commuteContainer.className = 'weather-commute good';
+    }
+
+  } catch (e) {
+    renderWeatherAdvice({ summary: '☁️ 天氣資料暫時未能取得', advice: '請稍後再試', psr: 'NONE' });
+  }
+}
 
   fetchWeather();
   setInterval(fetchWeather, 600000);
