@@ -426,7 +426,6 @@
     <div id="mode-switch">
       <button class="mode-button active" data-mode="nearby">附近即時</button>
       <button class="mode-button" data-mode="daily">我的路線</button>
-      <button class="mode-button" data-mode="ctb-debug">CTB Debug</button>
     </div>
     <div style="display:flex;align-items:center;gap:8px;">
       <div id="last-updated">KMB/LWB 更新 --:--</div><div id="ctb-updated">CTB 更新 --:--:--</div>
@@ -460,8 +459,9 @@
     .ctb-full-table-toolbar input { flex:1 1 260px; min-width:180px; border:1px solid #d7dce2; border-radius:9px; padding:8px 10px; }
     .ctb-full-table-scroll { max-height:62vh; overflow:auto; }
     .ctb-full-table { width:100%; border-collapse:collapse; font-size:12px; }
-    .ctb-full-table th, .ctb-full-table td { padding:7px 9px; border-bottom:1px solid #edf0f2; text-align:left; white-space:nowrap; }
+    .ctb-full-table th, .ctb-full-table td { padding:7px 9px; border-bottom:1px solid #edf0f2; text-align:left; white-space:nowrap; color:#111827; }
     .ctb-full-table th { position:sticky; top:0; z-index:2; background:#f3f6f9; font-weight:800; }
+    .ctb-full-table a { color:#0055B8; text-decoration:underline; font-weight:700; }
     .ctb-full-table td.mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
     .ctb-table-summary { font-size:12px; color:#5f6368; margin:8px 0; }
     .ctb-progress { height:7px; border-radius:99px; background:#e9edf2; overflow:hidden; margin:8px 0; }
@@ -1219,7 +1219,6 @@
       if (!shouldShow) searchInput.value = '';
     }
 
-    // CTB Debug: validate the complete data pipeline in four checkpoints.
     // The known-good sample chain is route 1 -> inbound -> stop 002403 -> ETA.
     const CTB_DEBUG_SAMPLE = { route: '1', direction: 'inbound', stopId: '002403' };
     let ctbDebugState = {
@@ -1572,82 +1571,20 @@
       const visibleStops = filter ? stopRows.filter(r => [r.stopId,r.nameTc,r.nameEn,r.status].join(' ').toUpperCase().includes(filter)) : stopRows;
       const routeVisible = filter ? routeRows.filter(r => [r.route,r.bound,r.serviceType,r.origTc,r.destTc,r.origEn,r.destEn].join(' ').toUpperCase().includes(filter)) : routeRows;
       const link = (url,label) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-      const routeTable = routeRows.length ? `<h3>① Route table (${routeVisible.length}/${routeRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Route</th><th>Bound</th><th>Service</th><th>Origin TC</th><th>Destination TC</th><th>Origin EN</th><th>Destination EN</th><th>Route API</th></tr></thead><tbody>${routeVisible.map(r => { const u=`https://rt.data.gov.hk/v2/transport/citybus/route/CTB/${encodeURIComponent(r.route)}`; return `<tr><td class="mono">${escapeHtml(r.route)}</td><td>${escapeHtml(r.bound)}</td><td>${escapeHtml(r.serviceType)}</td><td>${escapeHtml(r.origTc)}</td><td>${escapeHtml(r.destTc)}</td><td>${escapeHtml(r.origEn)}</td><td>${escapeHtml(r.destEn)}</td><td>${link(u,'Route')}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="ctb-debug-note">Route table 尚未載入。</div>';
-      const rsTable = rsRows.length ? `<h3>② Route-Stop table (${visibleRs.length}/${rsRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Route</th><th>Direction</th><th>Seq</th><th>Stop ID</th><th>Service</th><th>Status</th><th>Testing Parameter</th><th>Test Link</th></tr></thead><tbody>${visibleRs.map(r => { const u=r.routeStopUrl||`https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(r.route)}/${r.direction}`; const eta=`https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${encodeURIComponent(r.stopId)}/${encodeURIComponent(r.route)}`; const stop=`https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(r.stopId)}`; return `<tr><td class="mono">${escapeHtml(r.route)}</td><td>${escapeHtml(r.direction)}</td><td class="mono">${escapeHtml(r.seq)}</td><td class="mono">${escapeHtml(r.stopId)}</td><td>${escapeHtml(r.serviceType)}</td><td>${escapeHtml(r.status)}</td><td class="mono">route-stop/CTB/${escapeHtml(r.route)}/${escapeHtml(r.direction)}</td><td>${link(u,'Route-Stop')} ${link(stop,'Stop')} ${link(eta,'ETA')}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="ctb-debug-note">Route-Stop table 尚未載入。</div>';
-      const stopTable = stopRows.length ? `<h3>③ Stop Detail table (${visibleStops.length}/${stopRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Stop ID</th><th>站名 TC</th><th>Stop EN</th><th>Lat</th><th>Long</th><th>Status</th><th>HTTP</th><th>ms</th><th>Testing Parameter</th><th>Test Link</th></tr></thead><tbody>${visibleStops.map(r => { return `<tr><td class="mono">${escapeHtml(r.stopId)}</td><td>${escapeHtml(r.nameTc)}</td><td>${escapeHtml(r.nameEn)}</td><td class="mono">${escapeHtml(r.lat)}</td><td class="mono">${escapeHtml(r.long)}</td><td>${escapeHtml(r.status)}</td><td>${escapeHtml(r.http||'')}</td><td>${escapeHtml(r.ms||'')}</td><td class="mono">stop/${escapeHtml(r.stopId)}</td><td>${link(r.url,'Stop')}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="ctb-debug-note">Stop Detail 尚未測試。按「測試全部 Stop Detail」才會逐個呼叫。</div>';
-      const etaTable = rsRows.length ? `<h3>④ ETA testing table</h3><div class="ctb-debug-note">這裡不會自動對全部 route-stop 發送 live ETA requests，避免大量 API 呼叫。每一列的 ETA link 可手動測試。</div>` : '';
+      const routeTable = routeRows.length ? `<h3>① Route table (${routeVisible.length}/${routeRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Route</th><th>Bound</th><th>Service</th><th>Origin TC</th><th>Destination TC</th><th>Origin EN</th><th>Destination EN</th><th>Route API</th></tr></thead><tbody>${routeVisible.map(r => { const u=`https://rt.data.gov.hk/v2/transport/citybus/route/CTB/${encodeURIComponent(r.route)}`; return `<tr><td class="mono">${escapeHtml(r.route)}</td><td>${escapeHtml(r.bound)}</td><td>${escapeHtml(r.serviceType)}</td><td>${escapeHtml(r.origTc)}</td><td>${escapeHtml(r.destTc)}</td><td>${escapeHtml(r.origEn)}</td><td>${escapeHtml(r.destEn)}</td><td>${link(u,'Route')}</td></tr>`; }).join('')}</tbody></table></div>` : '';
+      const rsTable = rsRows.length ? `<h3>② Route-Stop table (${visibleRs.length}/${rsRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Route</th><th>Direction</th><th>Seq</th><th>Stop ID</th><th>Service</th><th>Status</th><th>Testing Parameter</th><th>Test Link</th></tr></thead><tbody>${visibleRs.map(r => { const u=r.routeStopUrl||`https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(r.route)}/${r.direction}`; const eta=`https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${encodeURIComponent(r.stopId)}/${encodeURIComponent(r.route)}`; const stop=`https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(r.stopId)}`; return `<tr><td class="mono">${escapeHtml(r.route)}</td><td>${escapeHtml(r.direction)}</td><td class="mono">${escapeHtml(r.seq)}</td><td class="mono">${escapeHtml(r.stopId)}</td><td>${escapeHtml(r.serviceType)}</td><td>${escapeHtml(r.status)}</td><td class="mono">route-stop/CTB/${escapeHtml(r.route)}/${escapeHtml(r.direction)}</td><td>${link(u,'Route-Stop')} ${link(stop,'Stop')} ${link(eta,'ETA')}</td></tr>`; }).join('')}</tbody></table></div>` : '';
+      const stopTable = stopRows.length ? `<h3>③ Stop Detail table (${visibleStops.length}/${stopRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Stop ID</th><th>站名 TC</th><th>Stop EN</th><th>Lat</th><th>Long</th><th>Status</th><th>HTTP</th><th>ms</th><th>Testing Parameter</th><th>Test Link</th></tr></thead><tbody>${visibleStops.map(r => { return `<tr><td class="mono">${escapeHtml(r.stopId)}</td><td>${escapeHtml(r.nameTc)}</td><td>${escapeHtml(r.nameEn)}</td><td class="mono">${escapeHtml(r.lat)}</td><td class="mono">${escapeHtml(r.long)}</td><td>${escapeHtml(r.status)}</td><td>${escapeHtml(r.http||'')}</td><td>${escapeHtml(r.ms||'')}</td><td class="mono">stop/${escapeHtml(r.stopId)}</td><td>${link(r.url,'Stop')}</td></tr>`; }).join('')}</tbody></table></div>` : '';
+      const etaTable = rsRows.length ? `<h3>④ ETA testing table</h3>` : '';
       const progress = state.total ? `${state.done}/${state.total} Route-Stop requests · ${state.progress}%` : '';
       host.innerHTML = `<div class="ctb-full-table-wrap"><div class="ctb-full-table-toolbar"><input id="ctb-full-filter" placeholder="搜尋 route / stop / 名稱..." value="${escapeHtml(filter)}"><button class="ctb-debug-btn secondary" id="ctb-test-all-stop-details" ${!state.uniqueStops?.length || state.stopStatus==='LOADING' ? 'disabled' : ''}>測試全部 Stop Detail</button><button class="ctb-debug-btn secondary" id="ctb-download-csv" ${!rsRows.length ? 'disabled' : ''}>下載 CSV</button></div><div class="ctb-table-summary">${progress} · Routes: ${routeRows.length} · Route-Stop rows: ${rsRows.length} · Unique stops: ${state.uniqueStops?.length || 0} · Stop Detail: ${state.stopStatus || 'NOT_TESTED'}</div>${state.status==='LOADING' ? `<div class="ctb-progress"><div style="width:${state.progress}%"></div></div>` : ''}${routeTable}${rsTable}${stopTable}${etaTable}</div>`;
       document.getElementById('ctb-full-filter')?.addEventListener('input', renderCtbFullTable);
       document.getElementById('ctb-download-csv')?.addEventListener('click', downloadCtbFullTableCsv);
       document.getElementById('ctb-test-all-stop-details')?.addEventListener('click', testAllCtbStopDetails);
-    }
+    }).join('');
 
-    function renderCtbDebug() {
-      const container = document.getElementById('eta-container');
-      if (!container || currentMode !== 'ctb-debug') return;
-
-      const rs = ctbDebugState.routeStop || {};
-      const sm = ctbDebugState.stopMatch || {};
-      const eta = ctbDebugState.eta || {};
-      const norm = ctbDebugState.normalized || {};
-      const routeRows = rs.rows || [];
-      const match = rs.matchingStop || null;
-      const etaRows = eta.rows || [];
-      const normalized = norm.item || null;
-
-      const row = (title, state, detail) => `
-        <div class="ctb-debug-row">
-          <div><div class="ctb-debug-name">${escapeHtml(title)}</div><div class="ctb-debug-detail">${escapeHtml(detail)}</div></div>
-          <div>${ctbDebugBadge(state.status)}</div>
-          <div class="ctb-debug-detail">${escapeHtml(ctbDebugLastSuccess(state))}</div>
-        </div>`;
-
-      const lastCtb = providerRefreshTimestamps.ctb
-        ? formatClockTime(providerRefreshTimestamps.ctb, true)
-        : '--:--:--';
-      const staticInfo = staticDataState.fetchedAt ? `${staticDataState.source} · ${formatClockTime(staticDataState.fetchedAt, true)}` : (staticDataState.error || '尚未載入');
-
-      const routeStopDetail = rs.status === 'OK'
-        ? `${rs.http} · ${rs.ms}ms · ${rs.count} stops · ${match ? `找到 ${CTB_DEBUG_SAMPLE.stopId}` : `找不到 ${CTB_DEBUG_SAMPLE.stopId}`}`
-        : (rs.error || '尚未測試');
-      const stopDetail = sm.status === 'OK'
-        ? `${sm.http} · ${sm.ms}ms · ${sm.stop?.nameTc || sm.stop?.nameEn || CTB_DEBUG_SAMPLE.stopId}`
-        : (sm.error || '尚未測試');
-      const etaDetail = eta.status === 'OK'
-        ? `${eta.http} · ${eta.ms}ms · ${eta.count} ETA records`
-        : (eta.error || '尚未測試');
-      const normDetail = norm.status === 'OK'
-        ? `provider=${normalized.provider} · route=${normalized.route} · stop=${normalized.stop} · dest=${normalized.destination}`
-        : (norm.error || '尚未測試');
-
-      const sampleRows = etaRows.slice(0, 5).map(x => {
-        const etaText = x.eta ? new Date(x.eta).toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--';
-        return `<div class="ctb-sample-row"><span>${escapeHtml(String(x.route || ''))}</span><span>${escapeHtml(String(x.stop || ''))}</span><span>${escapeHtml(etaText)}</span><span>${escapeHtml(x.rmk_tc || x.rmk || '')}</span></div>`;
-      }).join('');
-
-      container.innerHTML = `<div class="ctb-debug-panel">
-        <div class="ctb-debug-actions">
-          <button class="ctb-debug-btn" id="ctb-test-all">測試完整流程</button>
-          <button class="ctb-debug-btn secondary" id="ctb-test-eta">只測 ETA</button>
-          <button class="ctb-debug-btn secondary" id="ctb-load-full-table">載入全部 CTB Tables</button><button class="ctb-debug-btn secondary" id="ctb-refresh-static">重新載入靜態資料</button>
-        </div>
-        <div class="ctb-debug-note">固定測試：Route ${CTB_DEBUG_SAMPLE.route} → ${CTB_DEBUG_SAMPLE.direction} → Stop ${CTB_DEBUG_SAMPLE.stopId}。另外可用「載入全部 CTB Tables」檢查完整 Route、Route-Stop 與 Stop Detail 資料。</div>
-        <div class="ctb-debug-grid">
-          ${row('① Route-Stop', rs, routeStopDetail)}
-          ${row('② Stop matching', sm, stopDetail)}
-          ${row('③ ETA', eta, etaDetail)}
-          ${row('④ Normalized Data', norm, normDetail)}
-        </div>
-        <div class="ctb-debug-note"><strong>Stop Inventory：</strong> ${ctbDebugBadge(ctbDebugState.stopInventory?.status || 'PENDING')} · ${escapeHtml(ctbDebugState.stopInventory?.count ? `${ctbDebugState.stopInventory.count} stops` : (ctbDebugState.stopInventory?.error || '尚未載入'))}</div>
+      container.innerHTML = `
         <div id="ctb-full-table-host"></div>
-        <div class="ctb-debug-note"><strong>CTB 靜態資料：</strong> ${escapeHtml(staticInfo)} · TTL 24h<br><strong>CTB 最後成功更新：</strong> ${escapeHtml(lastCtb)}<br（只有成功 ETA 回應才會更新；從未成功則保持 --:--:--）</div>
-        ${etaRows.length ? `<div class="ctb-debug-note"><strong>ETA 原始資料（最多 5 筆）</strong></div><div class="ctb-sample-table"><div class="ctb-sample-head"><span>Route</span><span>Stop</span><span>ETA</span><span>Remark</span></div>${sampleRows}</div>` : ''}
-        <div class="ctb-debug-note"><strong>測試 URL</strong><br>
-          <a class="ctb-debug-link" target="_blank" rel="noopener" href="${CTB_DEBUG_ENDPOINTS.routeStop}">Route-Stop</a><br>
-          <a class="ctb-debug-link" target="_blank" rel="noopener" href="${CTB_DEBUG_ENDPOINTS.stop}">Stop</a><br>
-          <a class="ctb-debug-link" target="_blank" rel="noopener" href="${CTB_DEBUG_ENDPOINTS.eta}">ETA</a>
-        </div>
+        ${etaRows.length ? `<div class="ctb-sample-table"><div class="ctb-sample-head"><span>Route</span><span>Stop</span><span>ETA</span><span>Remark</span></div>${sampleRows}</div>` : ''}
       </div>`;
 
       document.getElementById('ctb-test-all')?.addEventListener('click', runCtbDebug);
