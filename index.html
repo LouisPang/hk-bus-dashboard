@@ -455,6 +455,17 @@
     .ctb-pending { color:#8a6d1d; font-weight:700; }
     .ctb-debug-note { margin:10px 0; color:#5f6368; font-size:12px; line-height:1.5; }
     .ctb-debug-link { word-break:break-all; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:11px; color:#355; }
+    .ctb-full-table-wrap { margin-top:14px; border:1px solid #e6e9ed; border-radius:12px; overflow:hidden; background:#fff; }
+    .ctb-full-table-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:10px; border-bottom:1px solid #e6e9ed; background:#f8fafc; }
+    .ctb-full-table-toolbar input { flex:1 1 260px; min-width:180px; border:1px solid #d7dce2; border-radius:9px; padding:8px 10px; }
+    .ctb-full-table-scroll { max-height:62vh; overflow:auto; }
+    .ctb-full-table { width:100%; border-collapse:collapse; font-size:12px; }
+    .ctb-full-table th, .ctb-full-table td { padding:7px 9px; border-bottom:1px solid #edf0f2; text-align:left; white-space:nowrap; }
+    .ctb-full-table th { position:sticky; top:0; z-index:2; background:#f3f6f9; font-weight:800; }
+    .ctb-full-table td.mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .ctb-table-summary { font-size:12px; color:#5f6368; margin:8px 0; }
+    .ctb-progress { height:7px; border-radius:99px; background:#e9edf2; overflow:hidden; margin:8px 0; }
+    .ctb-progress > div { height:100%; width:0; background:#0055B8; transition:width .15s ease; }
   </style>
   <script>
     /*
@@ -498,6 +509,22 @@
     let stopMetaMap = {};
     let routeDb = null;
     let userLocation = null;
+    const PRESET_TEST_LOCATION = {
+      lat: 22.3193,
+      lng: 114.1694,
+      label: '旺角（測試位置）'
+    };
+    let locationSource = 'none';
+
+    function applyLocation(lat, lng, sourceLabel) {
+      userLocation = { lat, lng };
+      locationSource = sourceLabel;
+    }
+
+    function usePresetMongKokLocation(reason = '') {
+      applyLocation(PRESET_TEST_LOCATION.lat, PRESET_TEST_LOCATION.lng, PRESET_TEST_LOCATION.label);
+      console.info('[Location] Using preset Mong Kok test location', reason);
+    }
     let activeStopIds = [];
     let nearbyStopIds = [];
     let currentTemp = '';
@@ -690,6 +717,10 @@
       return routeDb;
     }
 
+    const CTB_ROUTE_STOP_DB_TTL = 24 * 60 * 60 * 1000;
+    let ctbRouteStopLoadPromise = null;
+    let ctbRouteStopLastLoadedAt = 0;
+
     async function fetchCtbRouteStops(route) {
       const routeKey = String(route || '').trim().toUpperCase();
       if (!routeKey) return [];
@@ -724,6 +755,58 @@
       return results;
     }
 
+    // CTB route/stop relationships are static enough to cache for a full day.
+    // They must NOT be requested as part of the 20-second ETA refresh loop.
+    // This loader runs once on startup (or when the 24h cache expires), then
+    // nearby ETA refreshes only read routeDb.ctb from memory/localStorage.
+    async function loadCtbRouteStopDatabase(force = false) {
+      if (!force && ctbRouteStopLoadPromise) return ctbRouteStopLoadPromise;
+
+      ctbRouteStopLoadPromise = (async () => {
+        await getOrFetchRouteDB();
+        if (!force && ctbRouteStopLastLoadedAt && Date.now() - ctbRouteStopLastLoadedAt < CTB_ROUTE_STOP_DB_TTL) {
+          return routeDb.ctb;
+        }
+
+        // Reuse the persisted route DB timestamp when available.
+        try {
+          const cached = JSON.parse(localStorage.getItem(ROUTE_DB_KEY) || 'null');
+          if (!force && cached?.timestamp && Date.now() - cached.timestamp < CTB_ROUTE_STOP_DB_TTL && cached.data?.ctb && Object.keys(cached.data.ctb).length) {
+            routeDb.ctb = cached.data.ctb;
+            ctbRouteStopLastLoadedAt = cached.timestamp;
+            return routeDb.ctb;
+          }
+        } catch (e) {}
+
+        const routeJson = await fetchWithCache('https://rt.data.gov.hk/v2/transport/citybus/route/CTB');
+        const routeRows = extractData(routeJson);
+        const routes = [...new Set(routeRows.map(x => String(x.route || '').trim().toUpperCase()).filter(Boolean))];
+
+        // Limit concurrency so the initial static load does not hammer the API.
+        const nextIndex = { value: 0 };
+        const worker = async () => {
+          while (true) {
+            const i = nextIndex.value++;
+            if (i >= routes.length) return;
+            await fetchCtbRouteStops(routes[i]);
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(6, routes.length) }, worker));
+
+        ctbRouteStopLastLoadedAt = Date.now();
+        try {
+          localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: ctbRouteStopLastLoadedAt, data: routeDb }));
+        } catch (e) {}
+        return routeDb.ctb;
+      })();
+
+      try {
+        return await ctbRouteStopLoadPromise;
+      } finally {
+        ctbRouteStopLoadPromise = null;
+      }
+    }
+
     async function findRouteStopsAcrossProviders(query) {
       const q = String(query || '').trim().toUpperCase();
       const db = await getOrFetchRouteDB();
@@ -737,24 +820,13 @@
         if (route.includes(q)) targetStops.push(...rows);
       });
 
-      // CTB uses the current V2 API. V1 route-stop was discontinued; load only
-      // matching CTB routes on demand instead of downloading hundreds of routes.
+      // CTB route search uses the cached static database. No Route-Stop API
+      // requests are made during search or the 20-second ETA loop.
       try {
-        const routeList = await fetchWithCache('https://rt.data.gov.hk/v2/transport/citybus/route/CTB');
-        const matchingCtbRoutes = [...new Set(extractData(routeList)
-          .map(x => String(x.route || '').toUpperCase())
-          .filter(Boolean)
-          .filter(route => route.includes(q)))];
-
-        const exactRoutes = matchingCtbRoutes.filter(route => route === q);
-        const partialRoutes = matchingCtbRoutes
-          .filter(route => route !== q)
-          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-        const limitedRoutes = [...exactRoutes, ...partialRoutes]
-          .slice(0, exactRoutes.length ? 1 : 8);
-
-        const ctbRows = await Promise.all(limitedRoutes.map(route => fetchCtbRouteStops(route)));
-        ctbRows.flat().forEach(row => targetStops.push(row));
+        await loadCtbRouteStopDatabase(false);
+        Object.entries(db.ctb || {}).forEach(([route, rows]) => {
+          if (route.includes(q)) targetStops.push(...rows);
+        });
       } catch (e) {}
 
       const seen = new Set();
@@ -997,7 +1069,7 @@
     function getWeatherTarget() {
       // Weather follows the user's current location, never the selected bus stop.
       if (userLocation && Number.isFinite(userLocation.lat) && Number.isFinite(userLocation.lng)) {
-        return { lat: userLocation.lat, lng: userLocation.lng, label: '你的位置' };
+        return { lat: userLocation.lat, lng: userLocation.lng, label: locationSource === 'preset-mong-kok' ? '旺角（測試位置）' : '你的位置' };
       }
       return null;
     }
@@ -1155,6 +1227,8 @@
       stopMatch: {},
       eta: {},
       normalized: {},
+      stopInventory: {},
+      fullTable: { status: 'IDLE', routes: [], rows: [], stopDetails: new Map(), error: '', progress: 0, total: 0, done: 0 },
       lastRun: null
     };
 
@@ -1296,6 +1370,219 @@
       renderCtbDebug();
     }
 
+    async function fetchCtbRouteListForDebug() {
+      const started = performance.now();
+      const json = await ctbDebugFetch('https://rt.data.gov.hk/v2/transport/citybus/route/CTB');
+      const rows = extractData(json)
+        .filter(x => x?.route)
+        .map(x => ({
+          route: String(x.route).toUpperCase(),
+          bound: x.bound || x.dir || x.direction || '',
+          serviceType: x.service_type ?? '',
+          origTc: x.orig_tc || x.origin_tc || '',
+          destTc: x.dest_tc || x.destination_tc || '',
+          origEn: x.orig_en || x.origin_en || '',
+          destEn: x.dest_en || x.destination_en || ''
+        }));
+      return { rows, http: json.http, ms: json.ms, elapsed: Math.round(performance.now() - started) };
+    }
+
+    async function ctbFetchRouteStopDebug(route, direction) {
+      const url = `https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(route)}/${direction}`;
+      const { json, http, ms } = await ctbDebugFetch(url);
+      const rows = extractData(json).filter(x => x?.stop).map(x => ({
+        route: String(x.route || route).toUpperCase(),
+        direction,
+        seq: Number(x.seq) || 0,
+        stopId: String(x.stop).padStart(6, '0'),
+        stopNameTc: x.name_tc || x.stop_name_tc || x.nameTc || '',
+        stopNameEn: x.name_en || x.stop_name_en || x.nameEn || '',
+        serviceType: x.service_type ?? '',
+        lat: x.lat ?? '',
+        long: x.long ?? x.lng ?? ''
+      }));
+      return { rows, http, ms };
+    }
+
+    async function runWithConcurrency(items, limit, worker, onProgress) {
+      let next = 0, done = 0;
+      const results = new Array(items.length);
+      const runners = Array.from({ length: Math.min(limit, items.length || 1) }, async () => {
+        while (true) {
+          const i = next++;
+          if (i >= items.length) return;
+          try { results[i] = await worker(items[i], i); }
+          catch (error) { results[i] = { error: ctbDebugError(error) }; }
+          done++;
+          onProgress?.(done, items.length);
+        }
+      });
+      await Promise.all(runners);
+      return results;
+    }
+
+    async function loadCtbFullRouteStopTable() {
+      const state = ctbDebugState.fullTable;
+      state.status = 'LOADING'; state.error = ''; state.rows = []; state.routes = [];
+      state.progress = 0; state.total = 0; state.done = 0;
+      state.routeRows = []; state.stopRows = []; state.stopDetails = new Map();
+      renderCtbDebug();
+      try {
+        // 1) Full CTB route table
+        const routeUrl = 'https://rt.data.gov.hk/v2/transport/citybus/route/CTB';
+        const routeResult = await ctbDebugFetch(routeUrl);
+        const routeRows = extractData(routeResult.json)
+          .filter(x => x?.route)
+          .map(x => ({
+            route: String(x.route).toUpperCase(),
+            bound: x.bound || x.dir || x.direction || '',
+            serviceType: x.service_type ?? '',
+            origTc: x.orig_tc || x.origin_tc || '',
+            destTc: x.dest_tc || x.destination_tc || '',
+            origEn: x.orig_en || x.origin_en || '',
+            destEn: x.dest_en || x.destination_en || ''
+          }));
+        state.routeRows = routeRows;
+        state.routes = routeRows;
+        state.routeMeta = { status:'OK', http:routeResult.http, ms:routeResult.ms, count:routeRows.length, url:routeUrl };
+
+        // 2) Full Route-Stop table. One request per route/direction.
+        const routeDirections = [];
+        const seenRD = new Set();
+        routeRows.forEach(r => {
+          const dir = String(r.bound || '').toLowerCase();
+          const directions = dir === 'inbound' || dir === 'outbound' ? [dir]
+            : (String(r.bound || '').toUpperCase() === 'I' ? ['inbound']
+            : String(r.bound || '').toUpperCase() === 'O' ? ['outbound']
+            : ['inbound','outbound']);
+          directions.forEach(d => {
+            const key = `${r.route}|${d}`;
+            if (!seenRD.has(key)) { seenRD.add(key); routeDirections.push({ route:r.route, direction:d }); }
+          });
+        });
+        state.total = routeDirections.length;
+        const rsResults = await runWithConcurrency(routeDirections, 6, async rd => {
+          try {
+            const url = `https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(rd.route)}/${rd.direction}`;
+            const result = await ctbDebugFetch(url);
+            const rows = extractData(result.json).filter(x => x?.stop).map(x => ({
+              route: String(x.route || rd.route).toUpperCase(),
+              direction: rd.direction,
+              seq: Number(x.seq) || 0,
+              stopId: String(x.stop).padStart(6, '0'),
+              serviceType: x.service_type ?? '',
+              status: 'OK',
+              routeStopHttp: result.http,
+              routeStopMs: result.ms,
+              routeStopUrl: url
+            }));
+            return { ...rd, status:'OK', http:result.http, ms:result.ms, count:rows.length, rows };
+          } catch (error) {
+            return { ...rd, status:'FAIL', error:ctbDebugError(error), rows:[] };
+          }
+        }, (done,total) => { state.done=done; state.progress=total ? Math.round(done/total*100) : 0; renderCtbDebug(); });
+
+        state.routeStopRows = rsResults;
+        state.rows = rsResults.flatMap(x => x.rows || []);
+
+        // 3) Unique stop IDs. We expose these immediately, then test Stop Detail separately.
+        const uniqueStops = [...new Map(state.rows.map(r => [r.stopId, { stopId:r.stopId }])).values()];
+        state.uniqueStops = uniqueStops;
+        state.stopTotal = uniqueStops.length;
+        state.stopDone = 0;
+        state.stopStatus = 'NOT_TESTED';
+        state.status = 'OK';
+        state.progress = 100;
+        state.done = state.total;
+        state.loadedAt = Date.now();
+      } catch (error) {
+        state.status = 'FAIL';
+        state.error = ctbDebugError(error);
+      }
+      renderCtbDebug();
+    }
+
+    async function testAllCtbStopDetails() {
+      const state = ctbDebugState.fullTable;
+      const stops = state.uniqueStops || [];
+      if (!stops.length) return;
+      state.stopStatus = 'LOADING'; state.stopDone = 0; state.stopError = '';
+      renderCtbDebug();
+      const results = await runWithConcurrency(stops, 6, async item => {
+        const url = `https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(item.stopId)}`;
+        try {
+          const result = await ctbDebugFetch(url);
+          const items = extractData(result.json);
+          const x = items[0] || result.json?.data || result.json;
+          return {
+            stopId:item.stopId,
+            status: result.http === 200 && x ? 'OK' : `HTTP ${result.http}`,
+            http:result.http, ms:result.ms,
+            nameTc:x?.name_tc || x?.stop_name_tc || x?.nameTc || '',
+            nameEn:x?.name_en || x?.stop_name_en || x?.nameEn || '',
+            lat:x?.lat ?? '', long:x?.long ?? '',
+            url
+          };
+        } catch(error) {
+          return { stopId:item.stopId, status:'FAIL', error:ctbDebugError(error), url };
+        }
+      }, (done,total) => { state.stopDone=done; state.stopStatus=done===total ? 'DONE' : 'LOADING'; renderCtbDebug(); });
+      state.stopRows = results;
+      state.stopStatus = 'DONE';
+      state.stopError = results.every(x => x.status !== 'OK') ? '所有 Stop Detail 請求均失敗' : '';
+      state.stopDetails = new Map(results.map(x => [x.stopId,x]));
+      state.rows = state.rows.map(r => ({ ...r, ...(state.stopDetails.get(r.stopId) || {}) }));
+      renderCtbDebug();
+    }
+
+    function downloadCtbFullTableCsv() {
+      const state = ctbDebugState.fullTable;
+      const rows = state.rows || [];
+      if (!rows.length) return;
+      const headers = ['Route','Direction','Seq','Stop ID','Stop Name TC','Stop Name EN','Lat','Long','Service Type','Route-Stop Status','Stop Status','Route-Stop Parameter','Route-Stop Link','Stop Parameter','Stop Link','ETA Parameter','ETA Link'];
+      const csvEscape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const lines = [headers.map(csvEscape).join(',')];
+      rows.forEach(r => {
+        const routeStopUrl = r.routeStopUrl || `https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(r.route)}/${r.direction}`;
+        const stopUrl = `https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(r.stopId)}`;
+        const etaUrl = `https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${encodeURIComponent(r.stopId)}/${encodeURIComponent(r.route)}`;
+        const d = state.stopDetails?.get(r.stopId) || {};
+        lines.push([
+          r.route,r.direction,r.seq,r.stopId,d.nameTc || r.nameTc || '',d.nameEn || r.nameEn || '',d.lat ?? r.lat ?? '',d.long ?? r.long ?? '',r.serviceType ?? '',r.status || '',d.status || '',
+          `route-stop/CTB/${r.route}/${r.direction}`,routeStopUrl,
+          `stop/${r.stopId}`,stopUrl,
+          `eta/CTB/${r.stopId}/${r.route}`,etaUrl
+        ].map(csvEscape).join(','));
+      });
+      const blob = new Blob(['\ufeff' + lines.join('\n')], { type:'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `ctb-all-route-stop-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function renderCtbFullTable() {
+      const state = ctbDebugState.fullTable;
+      const host = document.getElementById('ctb-full-table-host');
+      if (!host) return;
+      const filter = String(document.getElementById('ctb-full-filter')?.value || '').trim().toUpperCase();
+      const routeRows = state.routeRows || [];
+      const rsRows = state.rows || [];
+      const stopRows = state.stopRows || [];
+      const visibleRs = filter ? rsRows.filter(r => [r.route,r.direction,r.seq,r.stopId,r.status].join(' ').toUpperCase().includes(filter)) : rsRows;
+      const visibleStops = filter ? stopRows.filter(r => [r.stopId,r.nameTc,r.nameEn,r.status].join(' ').toUpperCase().includes(filter)) : stopRows;
+      const routeVisible = filter ? routeRows.filter(r => [r.route,r.bound,r.serviceType,r.origTc,r.destTc,r.origEn,r.destEn].join(' ').toUpperCase().includes(filter)) : routeRows;
+      const link = (url,label) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      const routeTable = routeRows.length ? `<h3>① Route table (${routeVisible.length}/${routeRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Route</th><th>Bound</th><th>Service</th><th>Origin TC</th><th>Destination TC</th><th>Origin EN</th><th>Destination EN</th><th>Route API</th></tr></thead><tbody>${routeVisible.map(r => { const u=`https://rt.data.gov.hk/v2/transport/citybus/route/CTB/${encodeURIComponent(r.route)}`; return `<tr><td class="mono">${escapeHtml(r.route)}</td><td>${escapeHtml(r.bound)}</td><td>${escapeHtml(r.serviceType)}</td><td>${escapeHtml(r.origTc)}</td><td>${escapeHtml(r.destTc)}</td><td>${escapeHtml(r.origEn)}</td><td>${escapeHtml(r.destEn)}</td><td>${link(u,'Route')}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="ctb-debug-note">Route table 尚未載入。</div>';
+      const rsTable = rsRows.length ? `<h3>② Route-Stop table (${visibleRs.length}/${rsRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Route</th><th>Direction</th><th>Seq</th><th>Stop ID</th><th>Service</th><th>Status</th><th>Testing Parameter</th><th>Test Link</th></tr></thead><tbody>${visibleRs.map(r => { const u=r.routeStopUrl||`https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(r.route)}/${r.direction}`; const eta=`https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${encodeURIComponent(r.stopId)}/${encodeURIComponent(r.route)}`; const stop=`https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(r.stopId)}`; return `<tr><td class="mono">${escapeHtml(r.route)}</td><td>${escapeHtml(r.direction)}</td><td class="mono">${escapeHtml(r.seq)}</td><td class="mono">${escapeHtml(r.stopId)}</td><td>${escapeHtml(r.serviceType)}</td><td>${escapeHtml(r.status)}</td><td class="mono">route-stop/CTB/${escapeHtml(r.route)}/${escapeHtml(r.direction)}</td><td>${link(u,'Route-Stop')} ${link(stop,'Stop')} ${link(eta,'ETA')}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="ctb-debug-note">Route-Stop table 尚未載入。</div>';
+      const stopTable = stopRows.length ? `<h3>③ Stop Detail table (${visibleStops.length}/${stopRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Stop ID</th><th>站名 TC</th><th>Stop EN</th><th>Lat</th><th>Long</th><th>Status</th><th>HTTP</th><th>ms</th><th>Testing Parameter</th><th>Test Link</th></tr></thead><tbody>${visibleStops.map(r => { return `<tr><td class="mono">${escapeHtml(r.stopId)}</td><td>${escapeHtml(r.nameTc)}</td><td>${escapeHtml(r.nameEn)}</td><td class="mono">${escapeHtml(r.lat)}</td><td class="mono">${escapeHtml(r.long)}</td><td>${escapeHtml(r.status)}</td><td>${escapeHtml(r.http||'')}</td><td>${escapeHtml(r.ms||'')}</td><td class="mono">stop/${escapeHtml(r.stopId)}</td><td>${link(r.url,'Stop')}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="ctb-debug-note">Stop Detail 尚未測試。按「測試全部 Stop Detail」才會逐個呼叫。</div>';
+      const etaTable = rsRows.length ? `<h3>④ ETA testing table</h3><div class="ctb-debug-note">這裡不會自動對全部 route-stop 發送 live ETA requests，避免大量 API 呼叫。每一列的 ETA link 可手動測試。</div>` : '';
+      const progress = state.total ? `${state.done}/${state.total} Route-Stop requests · ${state.progress}%` : '';
+      host.innerHTML = `<div class="ctb-full-table-wrap"><div class="ctb-full-table-toolbar"><input id="ctb-full-filter" placeholder="搜尋 route / stop / 名稱..." value="${escapeHtml(filter)}"><button class="ctb-debug-btn secondary" id="ctb-test-all-stop-details" ${!state.uniqueStops?.length || state.stopStatus==='LOADING' ? 'disabled' : ''}>測試全部 Stop Detail</button><button class="ctb-debug-btn secondary" id="ctb-download-csv" ${!rsRows.length ? 'disabled' : ''}>下載 CSV</button></div><div class="ctb-table-summary">${progress} · Routes: ${routeRows.length} · Route-Stop rows: ${rsRows.length} · Unique stops: ${state.uniqueStops?.length || 0} · Stop Detail: ${state.stopStatus || 'NOT_TESTED'}</div>${state.status==='LOADING' ? `<div class="ctb-progress"><div style="width:${state.progress}%"></div></div>` : ''}${routeTable}${rsTable}${stopTable}${etaTable}</div>`;
+      document.getElementById('ctb-full-filter')?.addEventListener('input', renderCtbFullTable);
+      document.getElementById('ctb-download-csv')?.addEventListener('click', downloadCtbFullTableCsv);
+      document.getElementById('ctb-test-all-stop-details')?.addEventListener('click', testAllCtbStopDetails);
+    }
+
     function renderCtbDebug() {
       const container = document.getElementById('eta-container');
       if (!container || currentMode !== 'ctb-debug') return;
@@ -1319,6 +1606,7 @@
       const lastCtb = providerRefreshTimestamps.ctb
         ? formatClockTime(providerRefreshTimestamps.ctb, true)
         : '--:--:--';
+      const staticInfo = staticDataState.fetchedAt ? `${staticDataState.source} · ${formatClockTime(staticDataState.fetchedAt, true)}` : (staticDataState.error || '尚未載入');
 
       const routeStopDetail = rs.status === 'OK'
         ? `${rs.http} · ${rs.ms}ms · ${rs.count} stops · ${match ? `找到 ${CTB_DEBUG_SAMPLE.stopId}` : `找不到 ${CTB_DEBUG_SAMPLE.stopId}`}`
@@ -1342,15 +1630,18 @@
         <div class="ctb-debug-actions">
           <button class="ctb-debug-btn" id="ctb-test-all">測試完整流程</button>
           <button class="ctb-debug-btn secondary" id="ctb-test-eta">只測 ETA</button>
+          <button class="ctb-debug-btn secondary" id="ctb-load-full-table">載入全部 CTB Tables</button><button class="ctb-debug-btn secondary" id="ctb-refresh-static">重新載入靜態資料</button>
         </div>
-        <div class="ctb-debug-note">固定測試：Route ${CTB_DEBUG_SAMPLE.route} → ${CTB_DEBUG_SAMPLE.direction} → Stop ${CTB_DEBUG_SAMPLE.stopId}。先確認 Route-Stop，再確認 Stop，再取 ETA，最後驗證統一資料格式。</div>
+        <div class="ctb-debug-note">固定測試：Route ${CTB_DEBUG_SAMPLE.route} → ${CTB_DEBUG_SAMPLE.direction} → Stop ${CTB_DEBUG_SAMPLE.stopId}。另外可用「載入全部 CTB Tables」檢查完整 Route、Route-Stop 與 Stop Detail 資料。</div>
         <div class="ctb-debug-grid">
           ${row('① Route-Stop', rs, routeStopDetail)}
           ${row('② Stop matching', sm, stopDetail)}
           ${row('③ ETA', eta, etaDetail)}
           ${row('④ Normalized Data', norm, normDetail)}
         </div>
-        <div class="ctb-debug-note"><strong>CTB 最後成功更新：</strong> ${escapeHtml(lastCtb)}<br>（只有成功 ETA 回應才會更新；從未成功則保持 --:--:--）</div>
+        <div class="ctb-debug-note"><strong>Stop Inventory：</strong> ${ctbDebugBadge(ctbDebugState.stopInventory?.status || 'PENDING')} · ${escapeHtml(ctbDebugState.stopInventory?.count ? `${ctbDebugState.stopInventory.count} stops` : (ctbDebugState.stopInventory?.error || '尚未載入'))}</div>
+        <div id="ctb-full-table-host"></div>
+        <div class="ctb-debug-note"><strong>CTB 靜態資料：</strong> ${escapeHtml(staticInfo)} · TTL 24h<br><strong>CTB 最後成功更新：</strong> ${escapeHtml(lastCtb)}<br（只有成功 ETA 回應才會更新；從未成功則保持 --:--:--）</div>
         ${etaRows.length ? `<div class="ctb-debug-note"><strong>ETA 原始資料（最多 5 筆）</strong></div><div class="ctb-sample-table"><div class="ctb-sample-head"><span>Route</span><span>Stop</span><span>ETA</span><span>Remark</span></div>${sampleRows}</div>` : ''}
         <div class="ctb-debug-note"><strong>測試 URL</strong><br>
           <a class="ctb-debug-link" target="_blank" rel="noopener" href="${CTB_DEBUG_ENDPOINTS.routeStop}">Route-Stop</a><br>
@@ -1364,6 +1655,12 @@
         await debugEta();
         debugNormalizeEta();
       });
+      document.getElementById('ctb-load-full-table')?.addEventListener('click', loadCtbFullRouteStopTable);
+      document.getElementById('ctb-refresh-static')?.addEventListener('click', async () => {
+        await loadUnifiedStaticData(true);
+        renderCtbDebug();
+      });
+      renderCtbFullTable();
     }
 
     async function runCtbDebug() {
@@ -1488,16 +1785,15 @@
 
       navigator.geolocation.getCurrentPosition(
         pos => {
-          userLocation = {
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude
-          };
+          applyLocation(pos.coords.latitude, pos.coords.longitude, 'device');
 
           if (activeStopIds.length > 0) fetchEtas();
           fetchWeather();
         },
-        () => {
-          /* Keep distance as Infinity if permission is denied. */
+        err => {
+          usePresetMongKokLocation(err?.message || 'geolocation failed');
+          if (activeStopIds.length > 0) fetchEtas();
+          fetchWeather();
         },
         { enableHighAccuracy: true, timeout: 10000 }
       );
@@ -1513,7 +1809,6 @@
       }
 
       await initStops();
-      getOrFetchRouteDB();
       requestLocation();
 
       if (currentMode === 'daily') {
@@ -1554,55 +1849,305 @@
 
     let ctbStopInventoryCache = null;
     let ctbStopInventoryFetchedAt = 0;
-    const CTB_STOP_CACHE_TTL = 15 * 60 * 1000;
+    const CTB_STOP_CACHE_TTL = 24 * 60 * 60 * 1000;
+    let ctbStopLoadPromise = null;
 
-    async function fetchCtbStops() {
-      // CTB publishes a complete Bus Stop data resource at /v2/transport/citybus/stop.
-      // This is the correct inventory for nearby-stop discovery; the single-stop
-      // endpoint /stop/{stop_id} is only needed when looking up one stop in detail.
-      if (ctbStopInventoryCache && Date.now() - ctbStopInventoryFetchedAt < CTB_STOP_CACHE_TTL) {
+    async function fetchCtbStops(force = false) {
+      // CTB stop metadata is static data. It is populated from the unique stop IDs
+      // already discovered by the cached CTB Route-Stop database. It is NEVER part
+      // of the 20-second ETA refresh loop.
+      if (!force && ctbStopInventoryCache && Date.now() - ctbStopInventoryFetchedAt < CTB_STOP_CACHE_TTL) {
+        if (typeof ctbDebugState !== 'undefined') {
+          ctbDebugState.stopInventory = {
+            status: 'OK', count: ctbStopInventoryCache.length, cached: true,
+            lastSuccess: ctbStopInventoryFetchedAt, error: ''
+          };
+        }
         return ctbStopInventoryCache;
       }
 
+      if (!force && ctbStopLoadPromise) return ctbStopLoadPromise;
+
+      ctbStopLoadPromise = (async () => {
+        const started = performance.now();
+        try {
+          // Route-Stop is already loaded/cached by the static-data loader.
+          await getOrFetchRouteDB();
+          const ctbDb = routeDb?.ctb || {};
+          const uniqueStopIds = [...new Set(
+            Object.values(ctbDb).flat().map(row => String(row?.stopId || '').padStart(6, '0')).filter(Boolean)
+          )];
+
+          if (!uniqueStopIds.length) {
+            throw new Error('CTB Route-Stop cache contains no stop IDs');
+          }
+
+          const results = [];
+          let done = 0;
+          const concurrency = 8;
+          let next = 0;
+
+          if (typeof ctbDebugState !== 'undefined') {
+            ctbDebugState.stopInventory = {
+              status: 'PENDING', count: 0, rawCount: uniqueStopIds.length,
+              done: 0, total: uniqueStopIds.length, lastSuccess: ctbDebugState.stopInventory?.lastSuccess || null,
+              error: ''
+            };
+            renderCtbDebug?.();
+          }
+
+          const worker = async () => {
+            while (true) {
+              const index = next++;
+              if (index >= uniqueStopIds.length) return;
+              const stopId = uniqueStopIds[index];
+              try {
+                const response = await fetch(
+                  `https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(stopId)}`,
+                  { cache: 'no-store' }
+                );
+                const text = await response.text();
+                let json = null;
+                try { json = JSON.parse(text); } catch (_) {}
+                if (!response.ok) throw new Error(`HTTP ${response.status}${text ? ` · ${text.slice(0, 120)}` : ''}`);
+
+                // Official CTB V2 Stop response puts the stop record in data.
+                // Keep the provider-native fields unchanged; only add provider/co
+                // metadata required by the dashboard's existing provider lookup.
+                const item = json?.data && !Array.isArray(json.data) ? json.data : (extractData(json)[0] || null);
+                if (item?.stop) {
+                  results.push({ ...item, stop: String(item.stop).padStart(6, '0'), provider: 'ctb', co: 'CTB' });
+                }
+              } catch (error) {
+                // One bad stop must not prevent the remaining static stop database
+                // from being populated. The Debug table records the aggregate result.
+              } finally {
+                done++;
+                if (typeof ctbDebugState !== 'undefined') {
+                  ctbDebugState.stopInventory.done = done;
+                  ctbDebugState.stopInventory.count = results.length;
+                  ctbDebugState.stopInventory.progress = Math.round(done / uniqueStopIds.length * 100);
+                  if (done === uniqueStopIds.length) renderCtbDebug?.();
+                }
+              }
+            }
+          };
+
+          await Promise.all(Array.from({ length: Math.min(concurrency, uniqueStopIds.length) }, worker));
+
+          // Deduplicate defensively by CTB stop ID.
+          const byStop = new Map(results.map(stop => [String(stop.stop).padStart(6, '0'), stop]));
+          ctbStopInventoryCache = [...byStop.values()];
+          ctbStopInventoryFetchedAt = Date.now();
+
+          const failed = uniqueStopIds.length - ctbStopInventoryCache.length;
+          if (typeof ctbDebugState !== 'undefined') {
+            ctbDebugState.stopInventory = {
+              status: ctbStopInventoryCache.length ? 'OK' : 'FAIL',
+              http: ctbStopInventoryCache.length ? 200 : undefined,
+              ms: Math.round(performance.now() - started),
+              count: ctbStopInventoryCache.length,
+              rawCount: uniqueStopIds.length,
+              done: uniqueStopIds.length,
+              total: uniqueStopIds.length,
+              progress: 100,
+              failed,
+              lastSuccess: ctbStopInventoryCache.length ? ctbStopInventoryFetchedAt : (ctbDebugState.stopInventory?.lastSuccess || null),
+              error: failed ? `${failed} 個 Stop API 請求失敗` : ''
+            };
+          }
+          return ctbStopInventoryCache;
+        } catch (error) {
+          if (typeof ctbDebugState !== 'undefined') {
+            ctbDebugState.stopInventory = {
+              status: 'FAIL', ms: Math.round(performance.now() - started), count: 0,
+              lastSuccess: ctbDebugState.stopInventory?.lastSuccess || null,
+              error: ctbDebugError(error)
+            };
+          }
+          console.error('CTB stop metadata load failed:', error);
+          return [];
+        }
+      })();
+
       try {
-        const json = await fetchJson('https://rt.data.gov.hk/v2/transport/citybus/stop');
-        const rows = extractData(json);
-        ctbStopInventoryCache = rows
-          .map(stop => ({
-            ...stop,
-            stop: String(stop.stop ?? '').padStart(6, '0'),
-            provider: 'ctb',
-            co: 'CTB'
-          }))
-          .filter(stop =>
-            stop.stop &&
-            Number.isFinite(parseFloat(stop.lat)) &&
-            Number.isFinite(parseFloat(stop.long))
-          );
-        ctbStopInventoryFetchedAt = Date.now();
-        return ctbStopInventoryCache;
-      } catch (error) {
-        console.error('CTB stop inventory failed:', error);
-        return [];
+        return await ctbStopLoadPromise;
+      } finally {
+        ctbStopLoadPromise = null;
+      }
+    }
+
+    // Unified static-data cache: routes, stops and route-stop relationships are
+    // loaded separately from live ETA and reused for up to 24 hours.
+    const STATIC_DB_NAME = 'hk-bus-dashboard-static';
+    const STATIC_DB_VERSION = 1;
+    const STATIC_DB_STORE = 'snapshots';
+    const STATIC_SNAPSHOT_KEY = 'all-providers-v2';
+    const STATIC_SNAPSHOT_TTL = 24 * 60 * 60 * 1000;
+    let staticDataLoadPromise = null;
+    let staticDataState = { status: 'NOT_READY', source: '', fetchedAt: null, error: '' };
+
+    function openStaticDb() {
+      return new Promise((resolve, reject) => {
+        if (!('indexedDB' in window)) {
+          reject(new Error('IndexedDB unavailable'));
+          return;
+        }
+        const req = indexedDB.open(STATIC_DB_NAME, STATIC_DB_VERSION);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(STATIC_DB_STORE)) {
+            db.createObjectStore(STATIC_DB_STORE, { keyPath: 'key' });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
+      });
+    }
+
+    async function readStaticSnapshot() {
+      try {
+        const db = await openStaticDb();
+        const snapshot = await new Promise((resolve, reject) => {
+          const tx = db.transaction(STATIC_DB_STORE, 'readonly');
+          const req = tx.objectStore(STATIC_DB_STORE).get(STATIC_SNAPSHOT_KEY);
+          req.onsuccess = () => resolve(req.result || null);
+          req.onerror = () => reject(req.error);
+        });
+        db.close();
+        if (snapshot?.fetchedAt && Date.now() - snapshot.fetchedAt < STATIC_SNAPSHOT_TTL) {
+          return snapshot;
+        }
+      } catch (e) {
+        // IndexedDB unavailable/corrupt: fall through to normal network load.
+      }
+      return null;
+    }
+
+    async function writeStaticSnapshot(snapshot) {
+      try {
+        const db = await openStaticDb();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction(STATIC_DB_STORE, 'readwrite');
+          tx.objectStore(STATIC_DB_STORE).put(snapshot);
+          tx.oncomplete = resolve;
+          tx.onerror = () => reject(tx.error);
+        });
+        db.close();
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function buildStaticSnapshot(fetchedAt = Date.now()) {
+      return { key: STATIC_SNAPSHOT_KEY, fetchedAt, allStops, routeDb };
+    }
+
+    function applyStaticSnapshot(snapshot) {
+      if (!snapshot?.routeDb) return false;
+      allStops = Array.isArray(snapshot.allStops) ? snapshot.allStops : [];
+      routeDb = snapshot.routeDb || { kmb: {}, lwb: {}, ctb: {} };
+      routeDb.kmb ||= {};
+      routeDb.lwb ||= {};
+      routeDb.ctb ||= {};
+      buildStopMetaMap();
+      staticDataState = { status: 'READY', source: 'IndexedDB', fetchedAt: snapshot.fetchedAt || null, error: '' };
+      ctbRouteStopLastLoadedAt = snapshot.fetchedAt || Date.now();
+      return true;
+    }
+
+    async function loadUnifiedStaticData(force = false) {
+      if (!force && staticDataLoadPromise) return staticDataLoadPromise;
+
+      staticDataLoadPromise = (async () => {
+        if (!force) {
+          const cached = await readStaticSnapshot();
+          if (cached && applyStaticSnapshot(cached)) return true;
+        }
+
+        staticDataState = { status: 'LOADING', source: 'network', fetchedAt: null, error: '' };
+
+        try {
+          // KMB/LWB static stop data.
+          const kmbStops = await fetchKmbStops();
+          allStops = kmbStops;
+
+          // KMB/LWB static route-stop relationships.
+          routeDb = { kmb: {}, lwb: {}, ctb: {} };
+          try {
+            const json = await fetchJson(`${getProviderApiBase('kmb')}/route-stop`);
+            extractData(json).forEach(item => {
+              if (!item?.route || !item?.stop) return;
+              const provider = normalizeProvider(item.co);
+              const route = String(item.route).toUpperCase();
+              if (!routeDb[provider][route]) routeDb[provider][route] = [];
+              routeDb[provider][route].push({
+                route,
+                stopId: String(item.stop),
+                seq: parseInt(item.seq, 10) || 0,
+                dir: normalizeDirection(item.dir || item.bound),
+                serviceType: normalizeServiceType(item.service_type),
+                provider,
+                providerCode: getProvider(provider).code
+              });
+            });
+          } catch (e) {}
+
+          // CTB static route-stop relationships: once per day, never from ETA loop.
+          await loadCtbRouteStopDatabase(true);
+
+          // CTB static stop inventory if available. Current API may still reject
+          // this request; failure is isolated and does not block ETA functionality.
+          const ctbStops = await fetchCtbStops(true);
+          if (ctbStops.length) {
+            const seen = new Set(allStops.map(stop => getStopKey(stop.stop, stop.provider)));
+            ctbStops.forEach(stop => {
+              const key = getStopKey(stop.stop, stop.provider);
+              if (!seen.has(key)) {
+                allStops.push(stop);
+                seen.add(key);
+              }
+            });
+          }
+
+          buildStopMetaMap();
+          const fetchedAt = Date.now();
+          await writeStaticSnapshot(buildStaticSnapshot(fetchedAt));
+          try {
+            localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: fetchedAt, data: routeDb }));
+          } catch (e) {}
+          ctbRouteStopLastLoadedAt = fetchedAt;
+          staticDataState = { status: 'READY', source: 'network', fetchedAt, error: '' };
+          return true;
+        } catch (error) {
+          staticDataState = { status: 'FAIL', source: 'network', fetchedAt: null, error: ctbDebugError(error) };
+          return false;
+        }
+      })();
+
+      try {
+        return await staticDataLoadPromise;
+      } finally {
+        staticDataLoadPromise = null;
       }
     }
 
     async function initStops() {
-      const [kmbStops, ctbStops] = await Promise.all([
-        fetchKmbStops(),
-        fetchCtbStops()
-      ]);
-
-      allStops = [...kmbStops, ...ctbStops];
+      const loaded = await loadUnifiedStaticData(false);
+      if (!loaded && allStops.length === 0) {
+        const [kmbStops, ctbStops] = await Promise.all([fetchKmbStops(), fetchCtbStops(false)]);
+        allStops = [...kmbStops, ...ctbStops];
+      }
       buildStopMetaMap();
 
-      // Keep a simple diagnostic count available to CTB Debug.
       if (typeof ctbDebugState !== 'undefined') {
+        const ctbCount = allStops.filter(x => normalizeProvider(x.provider || x.co) === 'ctb').length;
         ctbDebugState.stopInventory = {
-          status: ctbStops.length ? 'OK' : 'FAIL',
-          count: ctbStops.length,
-          lastSuccess: ctbStops.length ? Date.now() : (ctbDebugState.stopInventory?.lastSuccess || null),
-          error: ctbStops.length ? '' : 'CTB stop inventory returned no usable stops'
+          ...(ctbDebugState.stopInventory || {}),
+          count: ctbCount,
+          status: ctbCount ? 'OK' : (ctbDebugState.stopInventory?.status || 'FAIL'),
+          error: ctbDebugState.stopInventory?.error || ''
         };
       }
     }
@@ -1610,38 +2155,19 @@
     async function buildCtbNearbyStopsFromRoutes() {
       if (!userLocation) return [];
       try {
-        const routeJson = await fetchWithCache('https://rt.data.gov.hk/v2/transport/citybus/route/CTB');
-        const routes = extractData(routeJson).slice(0, 120);
+        // Static CTB route-stop relationships are loaded/cached separately.
+        // This function only reads the cache and performs no route-stop API calls.
+        await loadCtbRouteStopDatabase();
         const candidates = new Map();
+        Object.values(routeDb.ctb || {}).flat().forEach(row => {
+          if (!candidates.has(row.stopId)) candidates.set(row.stopId, row);
+        });
 
-        // Sample enough routes to find nearby stops without requesting the
-        // entire CTB network on every refresh. Route-specific discovery is
-        // lazy; ETA remains the real-time source.
-        for (const route of routes) {
-          const routeKey = String(route.route || '').toUpperCase();
-          if (!routeKey) continue;
-          const rows = await fetchCtbRouteStops(routeKey);
-          rows.forEach(row => {
-            if (!candidates.has(row.stopId)) candidates.set(row.stopId, row);
-          });
-          if (candidates.size >= 120) break;
-        }
-
-        const stopIds = [...candidates.keys()].slice(0, 120);
-        const details = await Promise.all(stopIds.map(async stopId => {
-          try {
-            const json = await fetchWithCache(`https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(stopId)}`);
-            const item = extractData(json)[0] || json?.data;
-            if (!item) return null;
-            return {
-              stopId, provider: 'ctb', co: 'CTB',
-              name_tc: item.name_tc || item.name_en || '',
-              lat: parseFloat(item.lat), long: parseFloat(item.long)
-            };
-          } catch (e) { return null; }
-        }));
-        return details.filter(x => x && Number.isFinite(x.lat) && Number.isFinite(x.long));
+        // Stop metadata remains a separate concern; when unavailable, retain
+        // the stop ID and let ETA data continue to work.
+        return [...candidates.values()];
       } catch (e) {
+        console.warn('CTB static route-stop database unavailable:', e);
         return [];
       }
     }
@@ -1650,7 +2176,8 @@
       if (allStops.length === 0) await initStops();
 
       if (!('geolocation' in navigator)) {
-        showError('不支援定位功能。');
+        usePresetMongKokLocation('browser does not support geolocation');
+        onLocationSuccess({ coords: { latitude: PRESET_TEST_LOCATION.lat, longitude: PRESET_TEST_LOCATION.lng } }, 'preset-mong-kok');
         return;
       }
 
@@ -1661,14 +2188,11 @@
       );
     }
 
-    function onLocationSuccess(position) {
+    function onLocationSuccess(position, source = 'device') {
       const userLat = position.coords.latitude;
       const userLong = position.coords.longitude;
 
-      userLocation = {
-        lat: userLat,
-        lng: userLong
-      };
+      applyLocation(userLat, userLong, source);
 
       const nearbyStops = allStops.filter(stop => {
         const lat = parseFloat(stop.lat);
@@ -1693,12 +2217,19 @@
         return;
       }
 
-      updateMetaText('附近站點（約300公尺）');
+      updateMetaText(locationSource === 'preset-mong-kok' ? '旺角測試位置 · 附近站點（約300公尺）' : '附近站點（約300公尺）');
       startEtaLoop();
     }
 
-    function onLocationError() {
-      showError('位置存取被拒絕。');
+    function onLocationError(error) {
+      usePresetMongKokLocation(error?.message || 'location unavailable');
+      onLocationSuccess({
+        coords: {
+          latitude: PRESET_TEST_LOCATION.lat,
+          longitude: PRESET_TEST_LOCATION.lng
+        }
+      }, 'preset-mong-kok');
+      updateMetaText('旺角測試位置 · 約300公尺');
     }
 
     function stopEtaLoop() {
