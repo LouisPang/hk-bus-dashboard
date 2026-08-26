@@ -631,6 +631,20 @@
       });
     }
 
+    function requestLocation() {
+      if (!('geolocation' in navigator)) return;
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          if (activeStopIds.length > 0) {
+            fetchEtas();
+          }
+        },
+        (err) => { /* fallback to distance Infinity */ },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    }
+
     async function initDashboard() {
       loadSavedRoutes();
       attachModeHandlers();
@@ -642,6 +656,7 @@
 
       await initStops();
       getOrFetchRouteDB();
+      requestLocation();
 
       if (currentMode === 'daily') {
         if (savedRoutes.length > 0) {
@@ -850,27 +865,33 @@
         stopsMap.get(stopId).items.push(r);
       });
 
+      const searchQuery = (currentMode === 'nearby' && document.getElementById('nearby-search'))
+        ? document.getElementById('nearby-search').value.trim().toUpperCase()
+        : '';
+
+      const isExactMatch = (routeStr) => searchQuery && routeStr.toUpperCase() === searchQuery;
+
       const sortedStops = [...stopsMap.values()].sort((a, b) => {
-        const getMinEta = (stop) => {
-          let min = Infinity;
-          stop.items.forEach(item => {
-            if (item.etas && item.etas.length > 0 && item.etas[0] < min) {
-              min = item.etas[0];
-            }
-          });
-          return min;
-        };
-
-        const minEtaA = getMinEta(a);
-        const minEtaB = getMinEta(b);
-
-        if (minEtaA !== minEtaB) return minEtaA - minEtaB;
-
         const distA = Number.isFinite(a.stopDistance) ? a.stopDistance : Infinity;
         const distB = Number.isFinite(b.stopDistance) ? b.stopDistance : Infinity;
-        if (distA !== distB) return distA - distB;
 
-        return a.stopName.localeCompare(b.stopName, 'zh-HK');
+        if (currentMode === 'daily') {
+          if (distA !== distB) return distA - distB;
+
+          const indexA = savedRoutes.findIndex(item => item.stopId === a.stopId);
+          const indexB = savedRoutes.findIndex(item => item.stopId === b.stopId);
+          return (indexA !== -1 ? indexA : 999) - (indexB !== -1 ? indexB : 999);
+        } else {
+          if (searchQuery) {
+            const hasExactA = a.items.some(item => isExactMatch(item.route));
+            const hasExactB = b.items.some(item => isExactMatch(item.route));
+            if (hasExactA !== hasExactB) return hasExactA ? -1 : 1;
+          }
+
+          if (distA !== distB) return distA - distB;
+
+          return a.stopName.localeCompare(b.stopName, 'zh-HK');
+        }
       });
 
       container.innerHTML = sortedStops.map(({ stopId, stopName, stopDistance, items }) => {
@@ -879,14 +900,17 @@
           : '站點';
 
         items.sort((a, b) => {
-          const etaA = (a.etas && a.etas.length > 0) ? a.etas[0] : Infinity;
-          const etaB = (b.etas && b.etas.length > 0) ? b.etas[0] : Infinity;
-          return etaA - etaB;
+          if (currentMode === 'nearby' && searchQuery) {
+            const exactA = isExactMatch(a.route);
+            const exactB = isExactMatch(b.route);
+            if (exactA !== exactB) return exactA ? -1 : 1;
+          }
+
+          return a.route.localeCompare(b.route, undefined, { numeric: true, sensitivity: 'base' });
         });
 
         const cardMarkup = items.map(r => {
           const firstEta = r.etas[0];
-          // Reverse secondary ETAs so Left = later (3rd ETA), Middle = next (2nd ETA)
           const nextEtas = r.etas.slice(1, 3).reverse().join(' | ');
 
           let timeClass = 'safe';
