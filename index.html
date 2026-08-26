@@ -974,13 +974,20 @@
     document.getElementById('meta-text').textContent = parts.join(' • ');
   }
 
-  function updateSearchVisibility() {
-    const searchInput = document.getElementById('nearby-search');
-    if (!searchInput) return;
-    const shouldShow = currentMode === 'nearby';
-    searchInput.style.display = shouldShow ? 'block' : 'none';
-    if (!shouldShow) searchInput.value = '';
+function updateSearchVisibility() {
+  const searchContainer = document.getElementById('toolbar-search');
+  const searchInput = document.getElementById('nearby-search');
+  if (!searchContainer || !searchInput) return;
+
+  const shouldShow = currentMode === 'nearby';
+
+  // Toggle the hidden class on the outer container
+  searchContainer.classList.toggle('hidden', !shouldShow);
+
+  if (!shouldShow) {
+    searchInput.value = '';
   }
+}
 
   function attachModeHandlers() {
     document.querySelectorAll('.mode-button').forEach(button => {
