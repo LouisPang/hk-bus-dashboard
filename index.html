@@ -44,6 +44,7 @@
       padding-bottom: 12px;
       border-bottom: 2px solid var(--border);
       margin-bottom: 12px;
+      flex-shrink: 0;
     }
 
     .title-group h1 {
@@ -73,6 +74,7 @@
       align-items: center;
       gap: 10px;
       margin-bottom: 10px;
+      flex-shrink: 0;
     }
 
     #mode-switch {
@@ -118,6 +120,7 @@
       border-radius: 999px;
       padding: 6px 12px;
       margin-bottom: 10px;
+      flex-shrink: 0;
     }
 
     .toolbar-search.hidden {
@@ -143,6 +146,7 @@
       gap: 6px;
       flex-wrap: wrap;
       margin-bottom: 8px;
+      flex-shrink: 0;
     }
 
     .saved-route-chip {
@@ -185,6 +189,7 @@
       display: flex;
       flex-direction: column;
       margin-bottom: 8px;
+      flex-shrink: 0;
     }
 
     .stop-header {
@@ -230,6 +235,7 @@
       height: 52px;
       min-height: 52px;
       max-height: 52px;
+      flex-shrink: 0;
     }
 
     .eta-card:last-child {
@@ -375,7 +381,7 @@
   <script>
     const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
     const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db';
-    const ROUTE_DB_TTL = 86400000; // 24 Hours Cache
+    const ROUTE_DB_TTL = 86400000;
     const PROVIDERS = [
       { id: 'kmb', label: 'KMB', api: 'https://data.etabus.gov.hk/v1/transport/kmb' },
       { id: 'lwb', label: 'LWB', api: 'https://data.etabus.gov.hk/v1/transport/kmb' }
