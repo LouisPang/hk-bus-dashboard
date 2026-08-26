@@ -393,12 +393,11 @@
       4) Rich route DB with operator, direction, service type and sequence
       5) Direction + service type aware grouping/filtering
       6) ETA remarks + generated timestamp
-      7) Provider abstraction for KMB/LWB (both are served by the KMB/LWB API;
-         the returned `co` field identifies the operator)
+      7) Provider abstraction for KMB/LWB/CTB; CTB uses the official Citybus API
     */
 
     const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
-    const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db.v2';
+    const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db.v3';
     const ROUTE_DB_TTL = 86400000;
     const ETA_CACHE_TTL = 15000;
     const REQUEST_CONCURRENCY = 6;
@@ -415,6 +414,12 @@
         code: 'LWB',
         label: 'LWB',
         api: 'https://data.etabus.gov.hk/v1/transport/kmb'
+      },
+      ctb: {
+        id: 'ctb',
+        code: 'CTB',
+        label: 'CTB',
+        api: 'https://rt.data.gov.hk/v2/transport/citybus'
       }
     };
 
@@ -447,6 +452,7 @@
     function normalizeProvider(value) {
       const code = String(value || '').toUpperCase();
       if (code === 'LWB') return 'lwb';
+      if (code === 'CTB') return 'ctb';
       return 'kmb';
     }
 
@@ -472,7 +478,7 @@
     }
 
     function getCompanyColours(providerIds) {
-      const companyMap = { kmb: '#E31E25', lwb: '#2A8F9C' };
+      const companyMap = { kmb: '#E31E25', lwb: '#2A8F9C', ctb: '#0055B8' };
       const list = Array.isArray(providerIds) ? providerIds : [providerIds || 'kmb'];
       const normalized = list
         .filter(Boolean)
@@ -566,8 +572,15 @@
       }
 
       try {
-        const json = await fetchJson(`${getProviderApiBase('kmb')}/route-stop`);
-        const list = extractData(json);
+        const [kmbJson, ctbJson] = await Promise.all([
+          fetchJson(`${getProviderApiBase('kmb')}/route-stop`),
+          fetchJson('https://rt.data.gov.hk/v1/transport/citybus-nwfb/route-stop/ctb')
+        ]);
+
+        const list = [
+          ...extractData(kmbJson),
+          ...extractData(ctbJson).map(item => ({ ...item, co: 'CTB' }))
+        ];
 
         const db = {};
         list.forEach(item => {
@@ -632,11 +645,32 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(savedRoutes.slice(0, 12)));
     }
 
+    function getStopKey(stopId, provider = 'kmb') {
+      return `${normalizeProvider(provider)}|${String(stopId)}`;
+    }
+
+    function getStopInfo(stopId, provider = 'kmb') {
+      const normalizedProvider = normalizeProvider(provider);
+      return allStops.find(stop =>
+        stop?.stop === stopId && normalizeProvider(stop.provider || stop.co) === normalizedProvider
+      );
+    }
+
+    function getStopName(stopId, provider = 'kmb') {
+      return stopMetaMap[getStopKey(stopId, provider)] || stopMetaMap[stopId] || '此站';
+    }
+
     function buildStopMetaMap() {
       stopMetaMap = {};
       allStops.forEach(stop => {
         if (stop?.stop) {
-          stopMetaMap[stop.stop] = stop.name_tc || stop.name_en || stop.stop;
+          const name = stop.name_tc || stop.name_en || stop.stop;
+          const provider = normalizeProvider(stop.provider || stop.co);
+          stopMetaMap[getStopKey(stop.stop, provider)] = name;
+          // Keep the legacy fallback for older KMB/LWB records.
+          if (provider === 'kmb' || provider === 'lwb') {
+            stopMetaMap[stop.stop] = name;
+          }
         }
       });
     }
@@ -693,7 +727,7 @@
         normalizedDir
       )) return;
 
-      const stopName = stopMetaMap[stopId] || '此站';
+      const stopName = getStopName(stopId, normalizedProvider);
       const key = getSavedRouteKey(
         route,
         dest,
@@ -944,8 +978,25 @@
       }
     }
 
+    async function fetchCtbStops() {
+      try {
+        const json = await fetchJson('https://rt.data.gov.hk/v1/transport/citybus-nwfb/stop');
+        return extractData(json).map(stop => ({
+          ...stop,
+          provider: 'ctb',
+          co: 'CTB',
+        }));
+      } catch (error) {
+        return [];
+      }
+    }
+
     async function initStops() {
-      allStops = await fetchKmbStops();
+      const [kmbStops, ctbStops] = await Promise.all([
+        fetchKmbStops(),
+        fetchCtbStops()
+      ]);
+      allStops = [...kmbStops, ...ctbStops];
       buildStopMetaMap();
     }
 
@@ -1097,6 +1148,24 @@
       }
     }
 
+    async function fetchCtbStopEta(stopId) {
+      const url = `https://rt.data.gov.hk/v1/transport/batch/stop-eta/ctb/${encodeURIComponent(stopId)}?lang=zh-hant`;
+      try {
+        return await fetchWithCache(url);
+      } catch (error) {
+        return { data: [] };
+      }
+    }
+
+    async function fetchCtbRouteEta(stopId, route) {
+      const url = `https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${encodeURIComponent(stopId)}/${encodeURIComponent(route)}`;
+      try {
+        return await fetchWithCache(url);
+      } catch (error) {
+        return { data: [] };
+      }
+    }
+
     function normalizeEtaItem(item, fallback = {}) {
       return {
         co: item?.co || fallback.co || getProvider(fallback.provider).code,
@@ -1168,11 +1237,13 @@
         const responses = await Promise.all(
           tasks.map(async task => {
             try {
-              const json = await fetchKmbRouteEta(
-                task.stopId,
-                task.route,
-                task.serviceType
-              );
+              const json = task.provider === 'ctb'
+                ? await fetchCtbRouteEta(task.stopId, task.route)
+                : await fetchKmbRouteEta(
+                    task.stopId,
+                    task.route,
+                    task.serviceType
+                  );
               return { task, json, items: extractData(json) };
             } catch (error) {
               return { task, json: null, items: [] };
@@ -1229,7 +1300,9 @@
         const responses = await Promise.all(
           stopTasks.map(async task => {
             try {
-              const json = await fetchKmbStopEta(task.stopId);
+              const json = task.provider === 'ctb'
+                ? await fetchCtbStopEta(task.stopId)
+                : await fetchKmbStopEta(task.stopId);
               return { task, json, items: extractData(json) };
             } catch (error) {
               return { task, json: null, items: [] };
@@ -1273,8 +1346,9 @@
       if (!item.route || !item.stop) return;
 
       const stopId = item.stop;
-      const stopLabel = stopMetaMap[stopId] || '此站';
-      const stopInfo = allStops.find(stop => stop?.stop === stopId);
+      const provider = normalizeProvider(item.provider);
+      const stopLabel = getStopName(stopId, provider);
+      const stopInfo = getStopInfo(stopId, provider);
 
       const stopDistance = userLocation && stopInfo
         ? getDistanceKm(
@@ -1286,7 +1360,6 @@
         : Number.POSITIVE_INFINITY;
 
       const destination = item.destination;
-      const provider = item.provider;
       const serviceType = normalizeServiceType(item.serviceType);
       const dir = normalizeDirection(item.dir);
 
@@ -1487,7 +1560,8 @@
               <div class="eta-card">
                 <div class="route-info">
                   <div class="route-badge"
-                       style="background:${getCompanyColours(provider)};">
+                       style="background:${getCompanyColours(provider)};"
+                       title="${escapeHtml(getProvider(provider).label)}">
                     ${escapeHtml(r.route)}
                   </div>
                   <div class="destination-wrap">
