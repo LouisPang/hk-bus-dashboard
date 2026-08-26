@@ -925,16 +925,104 @@
       return '現在';
     }
 
+
+    // HKO automatic weather stations with temperature observations.
+    // Coordinates are from HKO's official weather-station directory.
+    const HKO_TEMP_STATIONS = [
+      ['天文台','Hong Kong Observatory',22.301944,114.174167],
+      ['赤鱲角','Hong Kong International Airport',22.309444,113.921944],
+      ['打鼓嶺','Ta Kwu Ling',22.528611,114.156667],
+      ['流浮山','Lau Fau Shan',22.468889,113.983611],
+      ['屯門','Tuen Mun',22.392222,113.974167],
+      ['沙田','Sha Tin',22.402500,114.210000],
+      ['大埔','Tai Po',22.448333,114.177222],
+      ['大埔滘','Tai Po Kau',22.442500,114.183889],
+      ['元朗公園','Yuen Long Park',22.440833,114.018333],
+      ['上水','Sheung Shui',22.501944,114.111111],
+      ['北區','打鼓嶺',22.528611,114.156667],
+      ['將軍澳','Tseung Kwan O',22.315833,114.255556],
+      ['西貢','Sai Kung',22.375556,114.274444],
+      ['清水灣','Clear Water Bay',22.263333,114.299722],
+      ['黃大仙','Wong Tai Sin',22.339444,114.205278],
+      ['觀塘','Kwun Tong',22.318611,114.224722],
+      ['啟德','Kai Tak',22.309722,114.213333],
+      ['啟德跑道公園','Kai Tak Runway Park',22.305000,114.216944],
+      ['九龍城','Kowloon City',22.335000,114.184722],
+      ['深水埗','Sham Shui Po',22.335833,114.136944],
+      ['京士柏','King’s Park',22.311944,114.172778],
+      ['荃灣','Tsuen Wan',22.383611,114.107778],
+      ['荃灣城門谷','Tsuen Wan Shing Mun Valley',22.375556,114.126667],
+      ['葵涌','葵涌',22.343000,114.126000],
+      ['青衣','New Tsing Yi Station',22.344167,114.110000],
+      ['大帽山','Tai Mo Shan',22.410556,114.124444],
+      ['石崗','Shek Kong',22.436111,114.084722],
+      ['大棠','大棠',22.430000,114.060000],
+      ['黃竹坑','Wong Chuk Hang',22.247778,114.173611],
+      ['赤柱','Stanley',22.214167,114.218611],
+      ['筲箕灣','Shau Kei Wan',22.281667,114.236111],
+      ['長洲','Cheung Chau',22.201111,114.026667],
+      ['南丫島','Lamma Island',22.226111,114.108611],
+      ['大澳','Tai O',22.256111,113.856111],
+      ['昂坪','Ngong Ping',22.258611,113.912778],
+      ['東涌','東涌',22.288000,113.942000],
+      ['赤鱲角','Chek Lap Kok',22.309444,113.921944]
+    ];
+
+    const HKO_STATION_ALIASES = {
+      '香港天文台':'天文台', '天文台':'天文台', '香港國際機場':'赤鱲角', '機場':'赤鱲角',
+      '打鼓嶺':'打鼓嶺', '流浮山':'流浮山', '屯門':'屯門', '沙田':'沙田', '大埔':'大埔',
+      '大埔滘':'大埔滘', '元朗公園':'元朗公園', '上水':'上水', '將軍澳':'將軍澳', '西貢':'西貢',
+      '清水灣':'清水灣', '黃大仙':'黃大仙', '觀塘':'觀塘', '啟德':'啟德', '啟德跑道公園':'啟德跑道公園',
+      '九龍城':'九龍城', '深水埗':'深水埗', '京士柏':'京士柏', '荃灣':'荃灣', '荃灣城門谷':'荃灣城門谷',
+      '青衣':'青衣', '大帽山':'大帽山', '石崗':'石崗', '黃竹坑':'黃竹坑', '赤柱':'赤柱',
+      '筲箕灣':'筲箕灣', '長洲':'長洲', '南丫島':'南丫島', '大澳':'大澳', '昂坪':'昂坪'
+    };
+
+    function getWeatherTarget() {
+      // Weather follows the user's current location, never the selected bus stop.
+      if (userLocation && Number.isFinite(userLocation.lat) && Number.isFinite(userLocation.lng)) {
+        return { lat: userLocation.lat, lng: userLocation.lng, label: '你的位置' };
+      }
+      return null;
+    }
+
+    function findNearestHkoTemperature(rhr, target) {
+      const rows = Array.isArray(rhr?.temperature?.data) ? rhr.temperature.data : [];
+      if (!rows.length || !target) return null;
+      let best = null;
+      for (const row of rows) {
+        const place = String(row?.place || '').trim();
+        const canonical = HKO_STATION_ALIASES[place] || place;
+        const station = HKO_TEMP_STATIONS.find(s => s[0] === canonical || s[1] === place);
+        if (!station) continue;
+        const distance = getDistanceKm(target.lat, target.lng, station[2], station[3]);
+        const value = Number(row?.value);
+        if (!Number.isFinite(value)) continue;
+        if (!best || distance < best.distance) {
+          best = { place, value, distance, station: station[1] };
+        }
+      }
+      return best;
+    }
+
     function buildCommuteAdvice(rhr, flw, fnd, warnsum) {
       const forecast = String(flw?.forecastDesc || '');
       const outlook = String(flw?.outlook || '');
       const today = getTodayForecast(fnd);
-      const psr = String(today.PSR || '');
+      const psr = String(today.PSR || '').trim();
+      const psrLabel = {
+        '低': '降雨機會低',
+        '中低': '降雨機會偏低',
+        '中': '降雨機會中',
+        '中高': '降雨機會偏高',
+        '高': '降雨機會高'
+      }[psr] || '';
       const weatherText = `${forecast} ${outlook} ${String(today.forecastWeather || '')}`;
       const warnings = Array.isArray(warnsum?.details) ? warnsum.details : [];
       const warningActive = warnings.length > 0 || !!warnsum?.warning;
-      const temp = Number(rhr?.temperature?.data?.[0]?.value);
-      const rainProbability = Number(rhr?.rainProbability?.data?.[0]?.value);
+      const target = getWeatherTarget();
+      const nearest = findNearestHkoTemperature(rhr, target);
+      const temp = nearest?.value ?? Number(rhr?.temperature?.data?.[0]?.value);
       const icon = Array.isArray(rhr?.icon) ? rhr.icon[0] : rhr?.icon;
       const currentWeather = getHkoWeatherLabel(icon);
       const currentEmoji = getWeatherEmoji(icon);
@@ -976,8 +1064,8 @@
         advice,
         cls,
         psr,
-        summary: `${currentEmoji} ${Number.isFinite(temp) ? `${temp}°C` : '--°C'} · ${currentWeather}${Number.isFinite(rainProbability) ? ` · ${rainProbability}% 降雨` : ''}`,
-        detail: '天文台'
+        summary: `${currentEmoji} ${Number.isFinite(temp) ? `${temp}°C` : '--°C'} · ${currentWeather}${psrLabel ? ` · ${psrLabel}` : ''}`,
+        detail: nearest?.station ? `天文台 · ${nearest.station}` : '天文台'
       };
     }
 
@@ -1162,6 +1250,7 @@
           };
 
           if (activeStopIds.length > 0) fetchEtas();
+          fetchWeather();
         },
         () => {
           /* Keep distance as Infinity if permission is denied. */
@@ -1193,6 +1282,7 @@
           )];
 
           updateMetaText('已儲存站點');
+          fetchWeather();
           startEtaLoop();
           return;
         }
@@ -1909,3 +1999,4 @@
   </script>
 </body>
 </html>
+
