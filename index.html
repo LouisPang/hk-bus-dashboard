@@ -409,6 +409,21 @@
       }
     }
   </style>
+
+<style id="provider-status-style">
+.provider-status {
+  display:inline-flex;
+  gap:12px;
+  align-items:center;
+  font-size:14px;
+}
+.provider-status .ok { color:#22c55e; }
+.provider-status .err { color:#ef4444; }
+.provider-status .loading { color:#f59e0b; }
+.provider-status .muted { color:#9ca3af; }
+.provider-status .status-detail { opacity:.9; margin-left:4px; }
+</style>
+
 </head>
 <body>
   <header>
@@ -433,7 +448,11 @@
   </div>
 
   <div id="toolbar-search" class="toolbar-search hidden">
-    <input id="nearby-search" type="text" placeholder="搜尋路線號碼 (例如: 271, 1A)" autocomplete="off" />
+    <div id="providerStatus" class="provider-status">
+  <span id="kmbStatus" class="muted">KMB/LWB 更新 --:--</span>
+  <span id="ctbStatus" class="muted">CTB 更新 --:--</span>
+</div>
+<input id="nearby-search" type="text" placeholder="搜尋路線號碼 (例如: 271, 1A)" autocomplete="off" />
   </div>
 
   <div id="eta-container">
@@ -441,2350 +460,1327 @@
   </div>
 
   <style>
-    .ctb-debug-panel { padding: 12px; }
-    .ctb-debug-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
-    .ctb-debug-btn { border:0; border-radius:10px; padding:9px 12px; cursor:pointer; background:#0055B8; color:#fff; font-weight:700; }
-    .ctb-debug-btn.secondary { background:#eef3f8; color:#17324d; }
-    .ctb-debug-grid { display:grid; gap:8px; }
-    .ctb-debug-row { display:grid; grid-template-columns: 1fr auto auto; gap:10px; align-items:center; padding:10px 12px; border:1px solid #e6e9ed; border-radius:10px; background:#fff; }
-    .ctb-debug-name { font-weight:700; }
-    .ctb-debug-detail { font-size:12px; color:#6b7280; }
-    .ctb-ok { color:#16803a; font-weight:700; }
-    .ctb-fail { color:#c62828; font-weight:700; }
-    .ctb-pending { color:#8a6d1d; font-weight:700; }
-    .ctb-debug-note { margin:10px 0; color:#5f6368; font-size:12px; line-height:1.5; }
-    .ctb-debug-link { word-break:break-all; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:11px; color:#355; }
-    .ctb-full-table-wrap { margin-top:14px; border:1px solid #e6e9ed; border-radius:12px; overflow:hidden; background:#fff; }
-    .ctb-full-table-toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:10px; border-bottom:1px solid #e6e9ed; background:#f8fafc; }
-    .ctb-full-table-toolbar input { flex:1 1 260px; min-width:180px; border:1px solid #d7dce2; border-radius:9px; padding:8px 10px; }
-    .ctb-full-table-scroll { max-height:62vh; overflow:auto; }
-    .ctb-full-table { width:100%; border-collapse:collapse; font-size:12px; }
-    .ctb-full-table th, .ctb-full-table td { padding:7px 9px; border-bottom:1px solid #edf0f2; text-align:left; white-space:nowrap; color:#111827; }
-    .ctb-full-table th { position:sticky; top:0; z-index:2; background:#f3f6f9; font-weight:800; }
-    .ctb-full-table a { color:#0055B8; text-decoration:underline; font-weight:700; }
-    .ctb-full-table td.mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .ctb-table-summary { font-size:12px; color:#5f6368; margin:8px 0; }
-    .ctb-progress { height:7px; border-radius:99px; background:#e9edf2; overflow:hidden; margin:8px 0; }
-    .ctb-progress > div { height:100%; width:0; background:#0055B8; transition:width .15s ease; }
   </style>
-  <script>
-    /*
-      HK Bus Dashboard — API/data-layer enhancement
-      Implemented:
-      3) Route-specific ETA API for saved routes / route searches
-      4) Rich route DB with operator, direction, service type and sequence
-      5) Direction + service type aware grouping/filtering
-      6) ETA remarks + generated timestamp
-      7) Provider abstraction for KMB/LWB/CTB; CTB uses the official Citybus API
-    */
+ <script>
+  const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
+  const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db.v5';
+  const ROUTE_DB_TTL = 86400000;
+  const ETA_CACHE_TTL = 15000;
+  const REQUEST_CONCURRENCY = 6;
 
-    const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
-    const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db.v5';
-    const ROUTE_DB_TTL = 86400000;
-    const ETA_CACHE_TTL = 15000;
-    const REQUEST_CONCURRENCY = 6;
+  const PROVIDERS = {
+    kmb: { id: 'kmb', code: 'KMB', label: 'KMB', api: 'https://data.etabus.gov.hk/v1/transport/kmb' },
+    lwb: { id: 'lwb', code: 'LWB', label: 'LWB', api: 'https://data.etabus.gov.hk/v1/transport/kmb' },
+    ctb: { id: 'ctb', code: 'CTB', label: 'CTB', api: 'https://rt.data.gov.hk/v2/transport/citybus' }
+  };
 
-    const PROVIDERS = {
-      kmb: {
-        id: 'kmb',
-        code: 'KMB',
-        label: 'KMB',
-        api: 'https://data.etabus.gov.hk/v1/transport/kmb'
-      },
-      lwb: {
-        id: 'lwb',
-        code: 'LWB',
-        label: 'LWB',
-        api: 'https://data.etabus.gov.hk/v1/transport/kmb'
-      },
-      ctb: {
-        id: 'ctb',
-        code: 'CTB',
-        label: 'CTB',
-        api: 'https://rt.data.gov.hk/v2/transport/citybus'
-      }
-    };
+  let allStops = [];
+  let stopMetaMap = {};
+  let routeDb = null;
+  let userLocation = null;
+  const PRESET_TEST_LOCATION = { lat: 22.3193, lng: 114.1694, label: '旺角（測試位置）' };
+  let locationSource = 'none';
 
-    let allStops = [];
-    let stopMetaMap = {};
-    let routeDb = null;
-    let userLocation = null;
-    const PRESET_TEST_LOCATION = {
-      lat: 22.3193,
-      lng: 114.1694,
-      label: '旺角（測試位置）'
-    };
-    let locationSource = 'none';
+  let activeStopIds = [];
+  let nearbyStopIds = [];
+  let currentTemp = '';
+  let weatherState = { summary: '', forecast: '', outlook: '', psr: '', warning: '', updated: null };
+  let currentMode = 'nearby';
+  let etaPollTimer = null;
+  let savedRoutes = [];
+  let etaCache = new Map();
+  let requestQueue = [];
+  let activeRequests = 0;
+  let providerRefreshTimestamps = { kmb: null, lwb: null, ctb: null };
 
-    function applyLocation(lat, lng, sourceLabel) {
-      userLocation = { lat, lng };
-      locationSource = sourceLabel;
+  const providerLiveStatus = {
+    kmb: { state: 'idle', lastSuccess: null, lastAttempt: null, error: '' },
+    ctb: { state: 'idle', lastSuccess: null, lastAttempt: null, error: '' }
+  };
+
+  /* LocalStorage & Saved Routes Management */
+  function loadSavedRoutes() {
+    try {
+      const data = localStorage.getItem(STORAGE_KEY);
+      savedRoutes = data ? JSON.parse(data) : [];
+    } catch (e) {
+      savedRoutes = [];
     }
+  }
 
-    function usePresetMongKokLocation(reason = '') {
-      applyLocation(PRESET_TEST_LOCATION.lat, PRESET_TEST_LOCATION.lng, PRESET_TEST_LOCATION.label);
-      console.info('[Location] Using preset Mong Kok test location', reason);
-    }
-    let activeStopIds = [];
-    let nearbyStopIds = [];
-    let currentTemp = '';
-    let weatherState = { summary: '', forecast: '', outlook: '', psr: '', warning: '', updated: null };
-    let currentMode = 'nearby';
-    let etaPollTimer = null;
-    let savedRoutes = [];
-    let etaCache = new Map();
-    let requestQueue = [];
-    let activeRequests = 0;
-    let providerRefreshTimestamps = { kmb: null, lwb: null, ctb: null };
+  function saveSavedRoutes() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(savedRoutes));
+    } catch (e) {}
+  }
 
-    function debounce(func, delay = 300) {
-      let timer;
-      return (...args) => {
-        clearTimeout(timer);
-        timer = setTimeout(() => func(...args), delay);
-      };
-    }
+  function getSavedRouteKey(route, dest, stopId, provider = 'kmb', serviceType = 1, dir = '') {
+    return [normalizeProvider(provider), stopId, String(route).toUpperCase(), dest, serviceType, dir].join('|');
+  }
 
-    function getProvider(providerId = 'kmb') {
-      return PROVIDERS[providerId] || PROVIDERS.kmb;
-    }
+  function isSavedRoute(route, dest, stopId, provider = 'kmb', serviceType = 1, dir = '') {
+    const key = getSavedRouteKey(route, dest, stopId, provider, serviceType, dir);
+    return savedRoutes.some(r => getSavedRouteKey(r.route, r.dest, r.stopId, r.provider, r.serviceType, r.dir) === key);
+  }
 
-    function normalizeProvider(value) {
-      const code = String(value || '').toUpperCase();
-      if (code === 'LWB') return 'lwb';
-      if (code === 'CTB') return 'ctb';
-      return 'kmb';
-    }
-
-    function getProviderApiBase(providerId = 'kmb') {
-      return getProvider(providerId).api;
-    }
-
-    function updateClock() {
-      const now = new Date();
-      document.getElementById('clock').textContent =
-        `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    }
-    setInterval(updateClock, 1000);
-    updateClock();
-
-    function formatClockTime(timestamp, withSeconds = false) {
-      if (!timestamp) return '--:--' + (withSeconds ? ':--' : '');
-      const d = new Date(timestamp);
-      if (!Number.isFinite(d.getTime())) return '--:--' + (withSeconds ? ':--' : '');
-      return withSeconds
-        ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
-        : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-    }
-
-    function markProviderRefresh(providerId) {
-      const id = normalizeProvider(providerId);
-      providerRefreshTimestamps[id] = Date.now();
-      const ctbEl = document.getElementById('ctb-updated');
-      if (ctbEl) ctbEl.textContent = `CTB 更新 ${formatClockTime(providerRefreshTimestamps.ctb, true)}`;
-      const lastEl = document.getElementById('last-updated');
-      if (lastEl) {
-        const kmb = providerRefreshTimestamps.kmb;
-        const lwb = providerRefreshTimestamps.lwb;
-        const parts = [];
-        if (kmb) parts.push(`KMB ${formatClockTime(kmb)}`);
-        if (lwb) parts.push(`LWB ${formatClockTime(lwb)}`);
-        lastEl.textContent = parts.length ? parts.join(' · ') : 'KMB/LWB 更新 --:--';
-      }
-    }
-
-    function updateLastUpdated(providerIds = ['kmb']) {
-      const ids = Array.isArray(providerIds) ? providerIds : [providerIds];
-      ids.forEach(id => markProviderRefresh(id));
-    }
-
-    function getCompanyColours(providerIds) {
-      const companyMap = { kmb: '#E31E25', lwb: '#2A8F9C', ctb: '#0055B8' };
-      const list = Array.isArray(providerIds) ? providerIds : [providerIds || 'kmb'];
-      const normalized = list
-        .filter(Boolean)
-        .map(id => companyMap[normalizeProvider(id)] || companyMap.kmb);
-      if (normalized.length === 1) return normalized[0];
-      if (normalized.length >= 2) {
-        return `linear-gradient(90deg, ${normalized[0]} 0 50%, ${normalized[1]} 50% 100%)`;
-      }
-      return companyMap.kmb;
-    }
-
-    async function fetchJson(url, options = {}) {
-      const response = await fetch(url, {
-        ...options,
-        cache: 'no-store'
+  function addSavedRoute(route, dest, stopId, provider = 'kmb', serviceType = 1, dir = '') {
+    if (!isSavedRoute(route, dest, stopId, provider, serviceType, dir)) {
+      savedRoutes.push({
+        route: String(route).toUpperCase(),
+        dest,
+        stopId,
+        provider: normalizeProvider(provider),
+        serviceType: normalizeServiceType(serviceType),
+        dir: normalizeDirection(dir)
       });
+      saveSavedRoutes();
+    }
+  }
+
+  function removeSavedRoute(key) {
+    savedRoutes = savedRoutes.filter(r => getSavedRouteKey(r.route, r.dest, r.stopId, r.provider, r.serviceType, r.dir) !== key);
+    saveSavedRoutes();
+  }
+
+  /* Stop Metadata Indexing */
+  function getStopKey(stopId, provider = 'kmb') {
+    return `${normalizeProvider(provider)}|${String(stopId).padStart(6, '0')}`;
+  }
+
+  function buildStopMetaMap() {
+    stopMetaMap = {};
+    allStops.forEach(stop => {
+      const id = stop.stop || stop.stop_id;
+      if (!id) return;
+      const key = getStopKey(id, stop.provider || stop.co);
+      stopMetaMap[key] = {
+        name: stop.name_tc || stop.name_en || stop.stop_name || '巴士站',
+        lat: parseFloat(stop.lat),
+        long: parseFloat(stop.long || stop.lng)
+      };
+    });
+  }
+
+  function getStopName(stopId, provider = 'kmb') {
+    const key = getStopKey(stopId, provider);
+    return stopMetaMap[key]?.name || `站點 ${stopId}`;
+  }
+
+  function getStopInfo(stopId, provider = 'kmb') {
+    const key = getStopKey(stopId, provider);
+    return stopMetaMap[key] || null;
+  }
+
+  /* Weather Helpers */
+  function buildCommuteAdvice(rhr, flw, fnd, warnsum) {
+    let summary = '🌤️ 天氣大致良好';
+    let advice = '適合出行';
+    let psr = 'GOOD';
+
+    if (warnsum && Object.keys(warnsum).length > 0) {
+      summary = '⚠️ 警告生效中';
+      advice = '請留意天氣警告';
+      psr = 'WARN';
+    }
+    return { summary, advice, psr };
+  }
+
+  function renderWeatherAdvice(advice) {
+    const summaryEl = document.getElementById('weather-summary');
+    const adviceEl = document.getElementById('weather-advice');
+    if (summaryEl) summaryEl.textContent = advice.summary;
+    if (adviceEl) adviceEl.textContent = advice.advice;
+  }
+
+  /* Core Utilities & Network */
+  function applyLocation(lat, lng, sourceLabel) {
+    userLocation = { lat, lng };
+    locationSource = sourceLabel;
+  }
+
+  function usePresetMongKokLocation(reason = '') {
+    applyLocation(PRESET_TEST_LOCATION.lat, PRESET_TEST_LOCATION.lng, PRESET_TEST_LOCATION.label);
+  }
+
+  function debounce(func, delay = 300) {
+    let timer;
+    return (...args) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => func(...args), delay);
+    };
+  }
+
+  function getProvider(providerId = 'kmb') { return PROVIDERS[providerId] || PROVIDERS.kmb; }
+  function normalizeProvider(value) {
+    const code = String(value || '').toUpperCase();
+    if (code === 'LWB') return 'lwb';
+    if (code === 'CTB') return 'ctb';
+    return 'kmb';
+  }
+  function getProviderApiBase(providerId = 'kmb') { return getProvider(providerId).api; }
+
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('clock').textContent =
+      `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  function formatClockTime(timestamp, withSeconds = false) {
+    if (!timestamp) return '--:--' + (withSeconds ? ':--' : '');
+    const d = new Date(timestamp);
+    if (!Number.isFinite(d.getTime())) return '--:--' + (withSeconds ? ':--' : '');
+    return withSeconds
+      ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+      : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  function markProviderRefresh(providerId) {
+    const id = normalizeProvider(providerId);
+    providerRefreshTimestamps[id] = Date.now();
+    const ctbEl = document.getElementById('ctb-updated');
+    if (ctbEl) ctbEl.textContent = `CTB 更新 ${formatClockTime(providerRefreshTimestamps.ctb, true)}`;
+    const lastEl = document.getElementById('last-updated');
+    if (lastEl) {
+      const kmb = providerRefreshTimestamps.kmb;
+      const lwb = providerRefreshTimestamps.lwb;
+      const parts = [];
+      if (kmb) parts.push(`KMB ${formatClockTime(kmb)}`);
+      if (lwb) parts.push(`LWB ${formatClockTime(lwb)}`);
+      lastEl.textContent = parts.length ? parts.join(' · ') : 'KMB/LWB 更新 --:--';
+    }
+  }
+
+  function updateLastUpdated(providerIds = ['kmb']) {
+    const ids = Array.isArray(providerIds) ? providerIds : [providerIds];
+    ids.forEach(id => markProviderRefresh(id));
+  }
+
+  function getCompanyColours(providerIds) {
+    const companyMap = { kmb: '#E31E25', lwb: '#2A8F9C', ctb: '#0055B8' };
+    const list = Array.isArray(providerIds) ? providerIds : [providerIds || 'kmb'];
+    const normalized = list.filter(Boolean).map(id => companyMap[normalizeProvider(id)] || companyMap.kmb);
+    if (normalized.length === 1) return normalized[0];
+    if (normalized.length >= 2) return `linear-gradient(90deg, ${normalized[0]} 0 50%, ${normalized[1]} 50% 100%)`;
+    return companyMap.kmb;
+  }
+
+  function formatProviderTime(ts) {
+    if (!ts) return '--:--';
+    const d = ts instanceof Date ? ts : new Date(ts);
+    if (Number.isNaN(d.getTime())) return '--:--';
+    return d.toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  }
+
+  function setProviderLiveStatus(provider, state, extra = {}) {
+    const key = provider === 'CTB' ? 'ctb' : 'kmb';
+    Object.assign(providerLiveStatus[key], { state, ...extra });
+
+    const el = document.getElementById(key === 'ctb' ? 'ctbStatus' : 'kmbStatus');
+    if (!el) return;
+
+    el.className = state === 'success' ? 'ok' : state === 'error' ? 'err' : state === 'loading' ? 'loading' : 'muted';
+    if (state === 'success') {
+      el.textContent = `${key === 'ctb' ? 'CTB' : 'KMB/LWB'} 更新 ${formatProviderTime(providerLiveStatus[key].lastSuccess)}`;
+    } else if (state === 'error') {
+      el.textContent = `${key === 'ctb' ? 'CTB' : 'KMB/LWB'} ✕ ${providerLiveStatus[key].error || 'API failed'}`;
+      el.title = providerLiveStatus[key].error || '';
+    } else if (state === 'loading') {
+      el.textContent = `${key === 'ctb' ? 'CTB' : 'KMB/LWB'} 更新中…`;
+    } else {
+      el.textContent = `${key === 'ctb' ? 'CTB' : 'KMB/LWB'} 更新 --:--`;
+    }
+  }
+
+  function markProviderAttempt(provider) { setProviderLiveStatus(provider, 'loading', { lastAttempt: new Date(), error: '' }); }
+  function markProviderSuccess(provider) { setProviderLiveStatus(provider, 'success', { lastSuccess: new Date(), error: '' }); }
+  function markProviderError(provider, error) {
+    const msg = error instanceof Error ? error.message : String(error || 'API failed');
+    setProviderLiveStatus(provider, 'error', { error: msg.slice(0, 80) });
+  }
+
+  async function fetchProviderJson(url, provider) {
+    markProviderAttempt(provider);
+    try {
+      const response = await fetch(url, { cache: 'no-store' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.json();
+      const text = await response.text();
+      let json;
+      try { json = JSON.parse(text); } catch { throw new Error(`HTTP ${response.status} / invalid JSON`); }
+
+      markProviderSuccess(provider);
+      return json;
+    } catch (err) {
+      markProviderError(provider, err);
+      throw err;
+    }
+  }
+
+  async function fetchJson(url, options = {}) {
+    const response = await fetch(url, { ...options, cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  }
+
+  function extractData(json) {
+    if (!json) return [];
+    if (Array.isArray(json)) return json;
+    return Array.isArray(json.data) ? json.data : [];
+  }
+
+  function normalizeServiceType(value) {
+    const n = parseInt(value, 10);
+    return Number.isFinite(n) ? n : 1;
+  }
+
+  function normalizeDirection(value) {
+    return String(value || '').toUpperCase();
+  }
+
+  function formatDataAge(timestamp) {
+    if (!timestamp) return '';
+    const t = new Date(timestamp).getTime();
+    if (!Number.isFinite(t)) return '';
+    const seconds = Math.max(0, Math.round((Date.now() - t) / 1000));
+    if (seconds < 60) return `${seconds}秒前`;
+    return `${Math.round(seconds / 60)}分鐘前`;
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+  }
+
+  function getDistanceKm(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  async function getOrFetchRouteDB() {
+    if (routeDb) return routeDb;
+    try {
+      const cached = localStorage.getItem(ROUTE_DB_KEY);
+      if (cached) {
+        const { timestamp, data } = JSON.parse(cached);
+        if (Date.now() - timestamp < ROUTE_DB_TTL && data) {
+          routeDb = { kmb: data.kmb || {}, lwb: data.lwb || {}, ctb: data.ctb || {} };
+          return routeDb;
+        }
+      }
+    } catch (e) {}
+
+    const db = { kmb: {}, lwb: {}, ctb: {} };
+    try {
+      const kmbJson = await fetchJson(`${getProviderApiBase('kmb')}/route-stop`);
+      extractData(kmbJson).forEach(item => {
+        if (!item?.route || !item?.stop) return;
+        const provider = normalizeProvider(item.co);
+        const route = String(item.route).toUpperCase();
+        if (!db[provider][route]) db[provider][route] = [];
+        db[provider][route].push({
+          route,
+          stopId: String(item.stop),
+          seq: parseInt(item.seq, 10) || 0,
+          dir: normalizeDirection(item.dir || item.bound),
+          serviceType: normalizeServiceType(item.service_type),
+          provider,
+          providerCode: getProvider(provider).code
+        });
+      });
+    } catch (e) {}
+
+    routeDb = db;
+    try { localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: Date.now(), data: db })); } catch (e) {}
+    return routeDb;
+  }
+
+  const CTB_ROUTE_STOP_DB_TTL = 24 * 60 * 60 * 1000;
+  let ctbRouteStopLoadPromise = null;
+  let ctbRouteStopLastLoadedAt = 0;
+
+  async function fetchCtbRouteStops(route) {
+    const routeKey = String(route || '').trim().toUpperCase();
+    if (!routeKey) return [];
+
+    await getOrFetchRouteDB();
+    if (routeDb.ctb[routeKey]?.length) return routeDb.ctb[routeKey];
+
+    const results = [];
+    for (const direction of ['inbound', 'outbound']) {
+      try {
+        const url = `https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(routeKey)}/${direction}`;
+        const json = await fetchWithCache(url);
+        extractData(json).forEach(item => {
+          if (!item?.route || !item?.stop) return;
+          results.push({
+            route: String(item.route).toUpperCase(),
+            stopId: String(item.stop).padStart(6, '0'),
+            seq: parseInt(item.seq, 10) || 0,
+            dir: normalizeDirection(item.dir),
+            serviceType: 1,
+            provider: 'ctb',
+            providerCode: 'CTB'
+          });
+        });
+      } catch (e) {}
     }
 
-    function extractData(json) {
-      if (!json) return [];
-      if (Array.isArray(json)) return json;
-      return Array.isArray(json.data) ? json.data : [];
-    }
+    routeDb.ctb[routeKey] = results;
+    try { localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: Date.now(), data: routeDb })); } catch (e) {}
+    return results;
+  }
 
-    function extractGeneratedTimestamp(json) {
-      return json?.generated_timestamp || '';
-    }
+  async function loadCtbRouteStopDatabase(force = false) {
+    if (!force && ctbRouteStopLoadPromise) return ctbRouteStopLoadPromise;
 
-    function normalizeServiceType(value) {
-      const n = parseInt(value, 10);
-      return Number.isFinite(n) ? n : 1;
-    }
-
-    function normalizeDirection(value) {
-      const v = String(value || '').toUpperCase();
-      return v || '';
-    }
-
-    function directionLabel(dir) {
-      const d = normalizeDirection(dir);
-      if (d === 'O') return '出';
-      if (d === 'I') return '入';
-      return d || '';
-    }
-
-    function formatDataAge(timestamp) {
-      if (!timestamp) return '';
-      const t = new Date(timestamp).getTime();
-      if (!Number.isFinite(t)) return '';
-      const seconds = Math.max(0, Math.round((Date.now() - t) / 1000));
-      if (seconds < 60) return `${seconds}秒前`;
-      return `${Math.round(seconds / 60)}分鐘前`;
-    }
-
-    function escapeHtml(value) {
-      return String(value ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#039;');
-    }
-
-    function getDistanceKm(lat1, lon1, lat2, lon2) {
-      const R = 6371;
-      const dLat = (lat2 - lat1) * Math.PI / 180;
-      const dLon = (lon2 - lon1) * Math.PI / 180;
-      const a = Math.sin(dLat / 2) ** 2 +
-        Math.cos(lat1 * Math.PI / 180) *
-        Math.cos(lat2 * Math.PI / 180) *
-        Math.sin(dLon / 2) ** 2;
-      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    }
-
-    async function getOrFetchRouteDB() {
-      if (routeDb) return routeDb;
+    ctbRouteStopLoadPromise = (async () => {
+      await getOrFetchRouteDB();
+      if (!force && ctbRouteStopLastLoadedAt && Date.now() - ctbRouteStopLastLoadedAt < CTB_ROUTE_STOP_DB_TTL) {
+        return routeDb.ctb;
+      }
 
       try {
-        const cached = localStorage.getItem(ROUTE_DB_KEY);
-        if (cached) {
-          const { timestamp, data } = JSON.parse(cached);
-          if (Date.now() - timestamp < ROUTE_DB_TTL && data) {
-            routeDb = { kmb: data.kmb || {}, lwb: data.lwb || {}, ctb: data.ctb || {} };
-            return routeDb;
-          }
+        const cached = JSON.parse(localStorage.getItem(ROUTE_DB_KEY) || 'null');
+        if (!force && cached?.timestamp && Date.now() - cached.timestamp < CTB_ROUTE_STOP_DB_TTL && cached.data?.ctb && Object.keys(cached.data.ctb).length) {
+          routeDb.ctb = cached.data.ctb;
+          ctbRouteStopLastLoadedAt = cached.timestamp;
+          return routeDb.ctb;
         }
       } catch (e) {}
 
-      const db = { kmb: {}, lwb: {}, ctb: {} };
+      const routeJson = await fetchWithCache('https://rt.data.gov.hk/v2/transport/citybus/route/CTB');
+      const routeRows = extractData(routeJson);
+      const routes = [...new Set(routeRows.map(x => String(x.route || '').trim().toUpperCase()).filter(Boolean))];
+
+      const nextIndex = { value: 0 };
+      const worker = async () => {
+        while (true) {
+          const i = nextIndex.value++;
+          if (i >= routes.length) return;
+          await fetchCtbRouteStops(routes[i]);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(6, routes.length) }, worker));
+
+      ctbRouteStopLastLoadedAt = Date.now();
+      try { localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: ctbRouteStopLastLoadedAt, data: routeDb })); } catch (e) {}
+      return routeDb.ctb;
+    })();
+
+    try { return await ctbRouteStopLoadPromise; } finally { ctbRouteStopLoadPromise = null; }
+  }
+
+  async function findRouteStopsAcrossProviders(query) {
+    const q = String(query || '').trim().toUpperCase();
+    const db = await getOrFetchRouteDB();
+
+    try { await loadCtbRouteStopDatabase(false); } catch (e) {}
+
+    if (!Object.keys(db.kmb || {}).length && !Object.keys(db.lwb || {}).length) {
       try {
         const kmbJson = await fetchJson(`${getProviderApiBase('kmb')}/route-stop`);
         extractData(kmbJson).forEach(item => {
           if (!item?.route || !item?.stop) return;
           const provider = normalizeProvider(item.co);
+          const targetProvider = provider === 'lwb' ? 'lwb' : 'kmb';
           const route = String(item.route).toUpperCase();
-          if (!db[provider][route]) db[provider][route] = [];
-          db[provider][route].push({
+          if (!db[targetProvider][route]) db[targetProvider][route] = [];
+          db[targetProvider][route].push({
             route,
             stopId: String(item.stop),
             seq: parseInt(item.seq, 10) || 0,
             dir: normalizeDirection(item.dir || item.bound),
             serviceType: normalizeServiceType(item.service_type),
-            provider,
-            providerCode: getProvider(provider).code
+            provider: targetProvider,
+            providerCode: getProvider(targetProvider).code
           });
         });
+        routeDb = db;
       } catch (e) {}
-
-      routeDb = db;
-      try {
-        localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: Date.now(), data: db }));
-      } catch (e) {}
-      return routeDb;
     }
 
-    const CTB_ROUTE_STOP_DB_TTL = 24 * 60 * 60 * 1000;
-    let ctbRouteStopLoadPromise = null;
-    let ctbRouteStopLastLoadedAt = 0;
-
-    async function fetchCtbRouteStops(route) {
-      const routeKey = String(route || '').trim().toUpperCase();
-      if (!routeKey) return [];
-
-      await getOrFetchRouteDB();
-      if (routeDb.ctb[routeKey]?.length) return routeDb.ctb[routeKey];
-
-      const results = [];
-      for (const direction of ['inbound', 'outbound']) {
-        try {
-          const url = `https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(routeKey)}/${direction}`;
-          const json = await fetchWithCache(url);
-          extractData(json).forEach(item => {
-            if (!item?.route || !item?.stop) return;
-            results.push({
-              route: String(item.route).toUpperCase(),
-              stopId: String(item.stop).padStart(6, '0'),
-              seq: parseInt(item.seq, 10) || 0,
-              dir: normalizeDirection(item.dir),
-              serviceType: 1,
-              provider: 'ctb',
-              providerCode: 'CTB'
-            });
-          });
-        } catch (e) {}
-      }
-
-      routeDb.ctb[routeKey] = results;
-      try {
-        localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: Date.now(), data: routeDb }));
-      } catch (e) {}
-      return results;
-    }
-
-    // CTB route/stop relationships are static enough to cache for a full day.
-    // They must NOT be requested as part of the 20-second ETA refresh loop.
-    // This loader runs once on startup (or when the 24h cache expires), then
-    // nearby ETA refreshes only read routeDb.ctb from memory/localStorage.
-    async function loadCtbRouteStopDatabase(force = false) {
-      if (!force && ctbRouteStopLoadPromise) return ctbRouteStopLoadPromise;
-
-      ctbRouteStopLoadPromise = (async () => {
-        await getOrFetchRouteDB();
-        if (!force && ctbRouteStopLastLoadedAt && Date.now() - ctbRouteStopLastLoadedAt < CTB_ROUTE_STOP_DB_TTL) {
-          return routeDb.ctb;
-        }
-
-        // Reuse the persisted route DB timestamp when available.
-        try {
-          const cached = JSON.parse(localStorage.getItem(ROUTE_DB_KEY) || 'null');
-          if (!force && cached?.timestamp && Date.now() - cached.timestamp < CTB_ROUTE_STOP_DB_TTL && cached.data?.ctb && Object.keys(cached.data.ctb).length) {
-            routeDb.ctb = cached.data.ctb;
-            ctbRouteStopLastLoadedAt = cached.timestamp;
-            return routeDb.ctb;
-          }
-        } catch (e) {}
-
-        const routeJson = await fetchWithCache('https://rt.data.gov.hk/v2/transport/citybus/route/CTB');
-        const routeRows = extractData(routeJson);
-        const routes = [...new Set(routeRows.map(x => String(x.route || '').trim().toUpperCase()).filter(Boolean))];
-
-        // Limit concurrency so the initial static load does not hammer the API.
-        const nextIndex = { value: 0 };
-        const worker = async () => {
-          while (true) {
-            const i = nextIndex.value++;
-            if (i >= routes.length) return;
-            await fetchCtbRouteStops(routes[i]);
-          }
-        };
-        await Promise.all(Array.from({ length: Math.min(6, routes.length) }, worker));
-
-        ctbRouteStopLastLoadedAt = Date.now();
-        try {
-          localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: ctbRouteStopLastLoadedAt, data: routeDb }));
-        } catch (e) {}
-        return routeDb.ctb;
-      })();
-
-      try {
-        return await ctbRouteStopLoadPromise;
-      } finally {
-        ctbRouteStopLoadPromise = null;
-      }
-    }
-
-    async function findRouteStopsAcrossProviders(query) {
-      const q = String(query || '').trim().toUpperCase();
-      const db = await getOrFetchRouteDB();
-      const targetStops = [];
-
-      // KMB/LWB route-stop database is already loaded.
-      Object.entries(db.kmb).forEach(([route, rows]) => {
-        if (route.includes(q)) targetStops.push(...rows);
+    const targetStops = [];
+    const addMatches = (providerName) => {
+      Object.entries(db[providerName] || {}).forEach(([route, rows]) => {
+        if (route.includes(q)) rows.forEach(row => targetStops.push(row));
       });
-      Object.entries(db.lwb).forEach(([route, rows]) => {
-        if (route.includes(q)) targetStops.push(...rows);
-      });
-
-      // CTB route search uses the cached static database. No Route-Stop API
-      // requests are made during search or the 20-second ETA loop.
-      try {
-        await loadCtbRouteStopDatabase(false);
-        Object.entries(db.ctb || {}).forEach(([route, rows]) => {
-          if (route.includes(q)) targetStops.push(...rows);
-        });
-      } catch (e) {}
-
-      const seen = new Set();
-      return targetStops.filter(row => {
-        const key = `${row.provider}|${row.stopId}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    }
-
-    function loadSavedRoutes() {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        const parsed = raw ? JSON.parse(raw) : [];
-        savedRoutes = Array.isArray(parsed)
-          ? parsed.map(item => {
-              const provider = normalizeProvider(item.provider);
-              const serviceType = normalizeServiceType(item.serviceType);
-              const dir = normalizeDirection(item.dir);
-              return {
-                ...item,
-                provider,
-                serviceType,
-                dir,
-                // Migrate older saved-route keys to the four-part identity:
-                // provider + stopId + route + destination.
-                key: getSavedRouteKey(item.route, item.dest, item.stopId, provider)
-              };
-            })
-          : [];
-      } catch (e) {
-        savedRoutes = [];
-      }
-    }
-
-    function saveSavedRoutes() {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(savedRoutes.slice(0, 12)));
-    }
-
-    function getStopKey(stopId, provider = 'kmb') {
-      return `${normalizeProvider(provider)}|${String(stopId)}`;
-    }
-
-    function getStopInfo(stopId, provider = 'kmb') {
-      const normalizedProvider = normalizeProvider(provider);
-      return allStops.find(stop =>
-        stop?.stop === stopId && normalizeProvider(stop.provider || stop.co) === normalizedProvider
-      );
-    }
-
-    function getStopName(stopId, provider = 'kmb') {
-      return stopMetaMap[getStopKey(stopId, provider)] || stopMetaMap[stopId] || '此站';
-    }
-
-    function buildStopMetaMap() {
-      stopMetaMap = {};
-      allStops.forEach(stop => {
-        if (stop?.stop) {
-          const name = stop.name_tc || stop.name_en || stop.stop;
-          const provider = normalizeProvider(stop.provider || stop.co);
-          stopMetaMap[getStopKey(stop.stop, provider)] = name;
-          // Keep the legacy fallback for older KMB/LWB records.
-          if (provider === 'kmb' || provider === 'lwb') {
-            stopMetaMap[stop.stop] = name;
-          }
-        }
-      });
-    }
-
-    // Saved-route identity intentionally remains simple:
-    // provider + stopId + route + destination.
-    // Direction/service type are still retained as API metadata, but do not
-    // create separate saved-route identities.
-    function getSavedRouteKey(route, dest, stopId, provider = 'kmb') {
-      return [
-        normalizeProvider(provider),
-        String(stopId),
-        String(route),
-        String(dest)
-      ].join('|');
-    }
-
-    function getSavedRouteKeys() {
-      return new Set(savedRoutes.map(item =>
-        getSavedRouteKey(
-          item.route,
-          item.dest,
-          item.stopId,
-          item.provider
-        )
-      ));
-    }
-
-    function isSavedRoute(route, dest, stopId, provider = 'kmb', serviceType = 1, dir = '') {
-      const key = getSavedRouteKey(route, dest, stopId, provider);
-      return savedRoutes.some(item =>
-        getSavedRouteKey(
-          item.route,
-          item.dest,
-          item.stopId,
-          item.provider
-        ) === key
-      );
-    }
-
-    function addSavedRoute(route, dest, stopId, provider = 'kmb', serviceType = 1, dir = '') {
-      if (!route || !dest || !stopId) return;
-
-      const normalizedProvider = normalizeProvider(provider);
-      const normalizedServiceType = normalizeServiceType(serviceType);
-      const normalizedDir = normalizeDirection(dir);
-
-      if (isSavedRoute(
-        route,
-        dest,
-        stopId,
-        normalizedProvider,
-        normalizedServiceType,
-        normalizedDir
-      )) return;
-
-      const stopName = getStopName(stopId, normalizedProvider);
-      const key = getSavedRouteKey(
-        route,
-        dest,
-        stopId,
-        normalizedProvider
-      );
-
-      savedRoutes.push({
-        key,
-        route: String(route),
-        dest: String(dest),
-        stopId,
-        provider: normalizedProvider,
-        serviceType: normalizedServiceType,
-        dir: normalizedDir,
-        stopName,
-        label: `${route} ${dest}`
-      });
-
-      saveSavedRoutes();
-    }
-
-    function removeSavedRoute(key) {
-      savedRoutes = savedRoutes.filter(item => item.key !== key);
-      saveSavedRoutes();
-    }
-
-    function getTodayForecast(fnd) {
-      const list = Array.isArray(fnd?.weatherForecast) ? fnd.weatherForecast : [];
-      const today = new Date();
-      const ymd = `${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`;
-      return list.find(x => String(x.forecastDate) === ymd) || list[0] || {};
-    }
-
-    function getHkoWeatherLabel(icon) {
-      const map = {
-        50:'天晴', 51:'間有陽光', 52:'短暫陽光', 53:'間有陽光有驟雨', 54:'短暫陽光有驟雨',
-        60:'多雲', 61:'密雲', 62:'微雨', 63:'有雨', 64:'大雨', 65:'雷暴',
-        76:'大致多雲', 77:'大致天晴', 80:'有風', 81:'乾燥', 82:'潮濕',
-        83:'有霧', 84:'有薄霧', 85:'有煙霞', 90:'炎熱', 91:'溫暖', 92:'清涼', 93:'寒冷'
-      };
-      return map[Number(icon)] || '天氣不明';
-    }
-
-    function getWeatherEmoji(icon) {
-      const n = Number(icon);
-      if (n === 65) return '⛈️';
-      if ([62,63,64].includes(n)) return '🌧️';
-      if ([53,54].includes(n)) return '🌦️';
-      if ([60,61,76].includes(n)) return '☁️';
-      if ([50,51,52,77].includes(n)) return '🌤️';
-      if ([90].includes(n)) return '🥵';
-      return '🌤️';
-    }
-
-    function commutePeriod() {
-      const h = new Date().getHours();
-      if (h >= 5 && h < 11) return '今早';
-      if (h >= 16 && h < 22) return '今晚';
-      if (h >= 11 && h < 16) return '午後';
-      return '現在';
-    }
-
-
-    // HKO automatic weather stations with temperature observations.
-    // Coordinates are from HKO's official weather-station directory.
-    const HKO_TEMP_STATIONS = [
-      ['天文台','Hong Kong Observatory',22.301944,114.174167],
-      ['赤鱲角','Hong Kong International Airport',22.309444,113.921944],
-      ['打鼓嶺','Ta Kwu Ling',22.528611,114.156667],
-      ['流浮山','Lau Fau Shan',22.468889,113.983611],
-      ['屯門','Tuen Mun',22.392222,113.974167],
-      ['沙田','Sha Tin',22.402500,114.210000],
-      ['大埔','Tai Po',22.448333,114.177222],
-      ['大埔滘','Tai Po Kau',22.442500,114.183889],
-      ['元朗公園','Yuen Long Park',22.440833,114.018333],
-      ['上水','Sheung Shui',22.501944,114.111111],
-      ['北區','打鼓嶺',22.528611,114.156667],
-      ['將軍澳','Tseung Kwan O',22.315833,114.255556],
-      ['西貢','Sai Kung',22.375556,114.274444],
-      ['清水灣','Clear Water Bay',22.263333,114.299722],
-      ['黃大仙','Wong Tai Sin',22.339444,114.205278],
-      ['觀塘','Kwun Tong',22.318611,114.224722],
-      ['啟德','Kai Tak',22.309722,114.213333],
-      ['啟德跑道公園','Kai Tak Runway Park',22.305000,114.216944],
-      ['九龍城','Kowloon City',22.335000,114.184722],
-      ['深水埗','Sham Shui Po',22.335833,114.136944],
-      ['京士柏','King’s Park',22.311944,114.172778],
-      ['荃灣','Tsuen Wan',22.383611,114.107778],
-      ['荃灣城門谷','Tsuen Wan Shing Mun Valley',22.375556,114.126667],
-      ['葵涌','葵涌',22.343000,114.126000],
-      ['青衣','New Tsing Yi Station',22.344167,114.110000],
-      ['大帽山','Tai Mo Shan',22.410556,114.124444],
-      ['石崗','Shek Kong',22.436111,114.084722],
-      ['大棠','大棠',22.430000,114.060000],
-      ['黃竹坑','Wong Chuk Hang',22.247778,114.173611],
-      ['赤柱','Stanley',22.214167,114.218611],
-      ['筲箕灣','Shau Kei Wan',22.281667,114.236111],
-      ['長洲','Cheung Chau',22.201111,114.026667],
-      ['南丫島','Lamma Island',22.226111,114.108611],
-      ['大澳','Tai O',22.256111,113.856111],
-      ['昂坪','Ngong Ping',22.258611,113.912778],
-      ['東涌','東涌',22.288000,113.942000],
-      ['赤鱲角','Chek Lap Kok',22.309444,113.921944]
-    ];
-
-    const HKO_STATION_ALIASES = {
-      '香港天文台':'天文台', '天文台':'天文台', '香港國際機場':'赤鱲角', '機場':'赤鱲角',
-      '打鼓嶺':'打鼓嶺', '流浮山':'流浮山', '屯門':'屯門', '沙田':'沙田', '大埔':'大埔',
-      '大埔滘':'大埔滘', '元朗公園':'元朗公園', '上水':'上水', '將軍澳':'將軍澳', '西貢':'西貢',
-      '清水灣':'清水灣', '黃大仙':'黃大仙', '觀塘':'觀塘', '啟德':'啟德', '啟德跑道公園':'啟德跑道公園',
-      '九龍城':'九龍城', '深水埗':'深水埗', '京士柏':'京士柏', '荃灣':'荃灣', '荃灣城門谷':'荃灣城門谷',
-      '青衣':'青衣', '大帽山':'大帽山', '石崗':'石崗', '黃竹坑':'黃竹坑', '赤柱':'赤柱',
-      '筲箕灣':'筲箕灣', '長洲':'長洲', '南丫島':'南丫島', '大澳':'大澳', '昂坪':'昂坪'
     };
 
-    function getWeatherTarget() {
-      // Weather follows the user's current location, never the selected bus stop.
-      if (userLocation && Number.isFinite(userLocation.lat) && Number.isFinite(userLocation.lng)) {
-        return { lat: userLocation.lat, lng: userLocation.lng, label: locationSource === 'preset-mong-kok' ? '旺角（測試位置）' : '你的位置' };
-      }
-      return null;
+    addMatches('kmb');
+    addMatches('lwb');
+    addMatches('ctb');
+
+    const seen = new Set();
+    const unique = targetStops.filter(row => {
+      const key = `${row.provider}|${row.stopId}|${row.route}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    unique.sort((a, b) => {
+      const aExact = String(a.route).toUpperCase() === q ? 0 : 1;
+      const bExact = String(b.route).toUpperCase() === q ? 0 : 1;
+      if (aExact !== bExact) return aExact - bExact;
+      const providerOrder = { ctb: 0, kmb: 1, lwb: 2 };
+      return (providerOrder[a.provider] ?? 9) - (providerOrder[b.provider] ?? 9);
+    });
+
+    return unique;
+  }
+
+  async function fetchWeather() {
+    try {
+      const base = 'https://data.weather.gov.hk/weatherAPI/opendata/weather.php';
+      const [rhr, flw, fnd, warnsum] = await Promise.all([
+        fetchJson(`${base}?dataType=rhrread&lang=tc`),
+        fetchJson(`${base}?dataType=flw&lang=tc`),
+        fetchJson(`${base}?dataType=fnd&lang=tc`),
+        fetchJson(`${base}?dataType=warnsum&lang=tc`)
+      ]);
+      const temp = rhr?.temperature?.data?.[0]?.value;
+      currentTemp = Number.isFinite(Number(temp)) ? `${temp}°C` : '';
+      weatherState.updated = new Date();
+      weatherState.forecast = flw?.forecastDesc || '';
+      weatherState.outlook = flw?.outlook || '';
+      const advice = buildCommuteAdvice(rhr, flw, fnd, warnsum);
+      weatherState.psr = advice.psr;
+      weatherState.summary = advice.summary;
+      renderWeatherAdvice(advice);
+    } catch (e) {
+      currentTemp = '';
+      renderWeatherAdvice({ summary: '☁️ 天氣資料暫時未能取得', advice: '天氣資料暫時未能取得', psr: 'NONE' });
     }
+    updateMetaText();
+  }
 
-    function findNearestHkoTemperature(rhr, target) {
-      const rows = Array.isArray(rhr?.temperature?.data) ? rhr.temperature.data : [];
-      if (!rows.length || !target) return null;
-      let best = null;
-      for (const row of rows) {
-        const place = String(row?.place || '').trim();
-        const canonical = HKO_STATION_ALIASES[place] || place;
-        const station = HKO_TEMP_STATIONS.find(s => s[0] === canonical || s[1] === place);
-        if (!station) continue;
-        const distance = getDistanceKm(target.lat, target.lng, station[2], station[3]);
-        const value = Number(row?.value);
-        if (!Number.isFinite(value)) continue;
-        if (!best || distance < best.distance) {
-          best = { place, value, distance, station: station[1] };
-        }
-      }
-      return best;
-    }
+  fetchWeather();
+  setInterval(fetchWeather, 600000);
 
-    function buildCommuteAdvice(rhr, flw, fnd, warnsum) {
-      const forecast = String(flw?.forecastDesc || '');
-      const outlook = String(flw?.outlook || '');
-      const today = getTodayForecast(fnd);
-      const psr = String(today.PSR || '');
-      const weatherText = `${forecast} ${outlook} ${String(today.forecastWeather || '')}`;
-      const warnings = Array.isArray(warnsum?.details) ? warnsum.details : [];
-      const warningActive = warnings.length > 0 || !!warnsum?.warning;
-      const target = getWeatherTarget();
-      const nearest = findNearestHkoTemperature(rhr, target);
-      const temp = nearest?.value ?? Number(rhr?.temperature?.data?.[0]?.value);
-      const icon = Array.isArray(rhr?.icon) ? rhr.icon[0] : rhr?.icon;
-      const currentWeather = getHkoWeatherLabel(icon);
-      const currentEmoji = getWeatherEmoji(icon);
-      const period = commutePeriod();
-      const thunder = /雷暴|雷雨|雷電|thunderstorm|thunder/i.test(weatherText);
-      const rain = /雨|驟雨|大雨|暴雨|rain|shower/i.test(weatherText);
-      const hot = (Number.isFinite(temp) && temp >= 32) || /炎熱|酷熱|very hot|extremely hot/i.test(weatherText);
-      const psrHigh = /^(高|中高|High|Medium High)$/i.test(psr);
-      const psrMedium = /^(高|中高|中|High|Medium High|Medium)$/i.test(psr);
+  function updateMetaText(statusMsg = '') {
+    const parts = ['香港'];
+    if (currentTemp) parts.push(currentTemp);
+    if (statusMsg) parts.push(statusMsg);
+    document.getElementById('meta-text').textContent = parts.join(' • ');
+  }
 
-      let advice = '✓ 天氣穩定，適合通勤';
-      let cls = 'good';
-      let adviceIcon = '✓';
+  function updateSearchVisibility() {
+    const searchInput = document.getElementById('nearby-search');
+    if (!searchInput) return;
+    const shouldShow = currentMode === 'nearby';
+    searchInput.style.display = shouldShow ? 'block' : 'none';
+    if (!shouldShow) searchInput.value = '';
+  }
 
-      if (warningActive) {
-        adviceIcon = '⚠️';
-        advice = '天氣警告生效，候車盡量選有遮蔽位置';
-        cls = 'alert';
-      } else if (thunder) {
-        adviceIcon = '⚡';
-        advice = `${period}有雷暴風險，候車盡量留在有蓋位置`;
-        cls = 'alert';
-      } else if (rain && (psrHigh || psrMedium)) {
-        adviceIcon = '☔';
-        advice = `${period}有雨機會，帶傘較穩`;
-        cls = 'warn';
-      } else if (rain) {
-        adviceIcon = '☔';
-        advice = `${period}有驟雨機會，帶傘較穩`;
-        cls = 'warn';
-      } else if (hot) {
-        adviceIcon = '🥵';
-        advice = '天氣炎熱，候車盡量避免長時間曝曬';
-        cls = 'warn';
-      }
+  function attachModeHandlers() {
+    document.querySelectorAll('.mode-button').forEach(button => {
+      button.addEventListener('click', async () => {
+        const selectedMode = button.dataset.mode;
+        if (selectedMode === currentMode) return;
 
-      return {
-        icon: adviceIcon,
-        advice,
-        cls,
-        psr,
-        summary: `${currentEmoji} ${Number.isFinite(temp) ? `${temp}°C` : '--°C'} · ${currentWeather}${psr ? ` · ${psr}% 降雨` : ''}`,
-        detail: nearest?.station ? `天文台 · ${nearest.station}` : '天文台'
-      };
-    }
+        currentMode = selectedMode;
+        document.querySelectorAll('.mode-button').forEach(b => b.classList.toggle('active', b.dataset.mode === currentMode));
+        updateSearchVisibility();
 
-    function renderWeatherAdvice(result) {
-      const wrap = document.getElementById('weather-commute');
-      const icon = wrap?.querySelector('.weather-icon');
-      const advice = document.getElementById('weather-advice');
-      const source = document.getElementById('weather-source');
-      const summary = document.getElementById('weather-summary');
-      if (!wrap || !icon || !advice || !source || !summary) return;
-      wrap.className = `weather-commute ${result.cls}`;
-      icon.textContent = result.icon;
-      advice.textContent = result.advice;
-      summary.textContent = result.summary;
-      source.textContent = result.detail || '天文台';
-    }
+        const etaContainerEl = document.getElementById('eta-container');
+        if (etaContainerEl) etaContainerEl.classList.toggle('daily-columns', currentMode === 'daily');
 
-    async function fetchWeather() {
-      try {
-        const base = 'https://data.weather.gov.hk/weatherAPI/opendata/weather.php';
-        const [rhr, flw, fnd, warnsum] = await Promise.all([
-          fetchJson(`${base}?dataType=rhrread&lang=tc`),
-          fetchJson(`${base}?dataType=flw&lang=tc`),
-          fetchJson(`${base}?dataType=fnd&lang=tc`),
-          fetchJson(`${base}?dataType=warnsum&lang=tc`)
-        ]);
-        const temp = rhr?.temperature?.data?.[0]?.value;
-        currentTemp = Number.isFinite(Number(temp)) ? `${temp}°C` : '';
-        weatherState.updated = new Date();
-        weatherState.forecast = flw?.forecastDesc || '';
-        weatherState.outlook = flw?.outlook || '';
-        const advice = buildCommuteAdvice(rhr, flw, fnd, warnsum);
-        weatherState.psr = advice.psr;
-        weatherState.summary = advice.summary;
-        renderWeatherAdvice(advice);
-      } catch (e) {
-        currentTemp = '';
-        const wrap = document.getElementById('weather-commute');
-        if (wrap) wrap.className = 'weather-commute';
-        const icon = wrap?.querySelector('.weather-icon');
-        if (icon) icon.textContent = '·';
-        const advice = document.getElementById('weather-advice');
-        if (advice) advice.textContent = '天氣資料暫時未能取得';
-        const summary = document.getElementById('weather-summary');
-        if (summary) summary.textContent = '☁️ 天氣資料暫時未能取得';
-        const source = document.getElementById('weather-source');
-        if (source) source.textContent = '天文台天氣資料';
-      }
-      updateMetaText();
-    }
-
-    fetchWeather();
-    setInterval(fetchWeather, 600000);
-
-    function updateMetaText(statusMsg = '') {
-      const parts = ['香港'];
-      if (currentTemp) parts.push(currentTemp);
-      if (statusMsg) parts.push(statusMsg);
-      document.getElementById('meta-text').textContent = parts.join(' • ');
-    }
-
-    function updateSearchVisibility() {
-      const searchWrap = document.getElementById('toolbar-search');
-      const searchInput = document.getElementById('nearby-search');
-      if (!searchWrap || !searchInput) return;
-
-      const shouldShow = currentMode === 'nearby';
-      searchWrap.classList.toggle('hidden', !shouldShow);
-
-      if (!shouldShow) searchInput.value = '';
-    }
-
-    // The known-good sample chain is route 1 -> inbound -> stop 002403 -> ETA.
-    const CTB_DEBUG_SAMPLE = { route: '1', direction: 'inbound', stopId: '002403' };
-    let ctbDebugState = {
-      routeStop: {},
-      stopMatch: {},
-      eta: {},
-      normalized: {},
-      stopInventory: {},
-      fullTable: { status: 'IDLE', routes: [], rows: [], stopDetails: new Map(), error: '', progress: 0, total: 0, done: 0 },
-      lastRun: null
-    };
-
-    const CTB_DEBUG_ENDPOINTS = {
-      route: 'https://rt.data.gov.hk/v2/transport/citybus/route/CTB/1',
-      routeStop: 'https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/1/inbound',
-      stop: 'https://rt.data.gov.hk/v2/transport/citybus/stop/002403',
-      eta: 'https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/002403/1'
-    };
-
-    function ctbDebugBadge(status) {
-      if (status === 'OK') return '<span class="ctb-ok">✓ OK</span>';
-      if (status === 'FAIL') return '<span class="ctb-fail">✕ FAIL</span>';
-      if (status === 'PENDING') return '<span class="ctb-pending">… TESTING</span>';
-      return '<span class="ctb-pending">--</span>';
-    }
-
-    function ctbDebugLastSuccess(state) {
-      return state?.lastSuccess ? formatClockTime(state.lastSuccess, true) : '--:--:--';
-    }
-
-    function ctbDebugError(error) {
-      return String(error?.message || error || '未知錯誤').slice(0, 240);
-    }
-
-    async function ctbDebugFetch(url) {
-      const started = performance.now();
-      const response = await fetch(url, { cache: 'no-store' });
-      const text = await response.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch (_) {}
-      const ms = Math.round(performance.now() - started);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}${text ? ` · ${text.slice(0, 180)}` : ''}`);
-      }
-      return { json, http: response.status, ms };
-    }
-
-    async function debugRouteStop() {
-      const state = { status: 'PENDING', lastSuccess: ctbDebugState.routeStop.lastSuccess || null };
-      ctbDebugState.routeStop = state;
-      renderCtbDebug();
-      try {
-        const { json, http, ms } = await ctbDebugFetch(CTB_DEBUG_ENDPOINTS.routeStop);
-        const rows = extractData(json);
-        const parsed = rows
-          .filter(x => x?.route && x?.stop)
-          .map(x => ({
-            route: String(x.route).toUpperCase(),
-            direction: String(x.direction || x.dir || '').toLowerCase(),
-            seq: Number(x.seq) || 0,
-            stopId: String(x.stop).padStart(6, '0'),
-            stopName: x.name_tc || x.name_en || x.stop_name_tc || x.stop_name_en || ''
-          }));
-        const first = parsed[0] || null;
-        const matchingStop = parsed.find(x => x.stopId === CTB_DEBUG_SAMPLE.stopId) || null;
-        const now = Date.now();
-        ctbDebugState.routeStop = {
-          status: 'OK', http, ms, count: parsed.length, lastSuccess: now,
-          rows: parsed, first, matchingStop,
-          generated: json?.generated_timestamp || ''
-        };
-        ctbDebugState.stopMatch = matchingStop
-          ? { status: 'OK', http, ms: 0, lastSuccess: now, row: matchingStop }
-          : { status: 'FAIL', error: `找不到 stop ${CTB_DEBUG_SAMPLE.stopId}`, lastSuccess: ctbDebugState.stopMatch.lastSuccess || null };
-      } catch (error) {
-        ctbDebugState.routeStop = { ...state, status: 'FAIL', error: ctbDebugError(error) };
-        ctbDebugState.stopMatch = { status: 'FAIL', error: 'Route-Stop 未成功，無法檢查 stop matching', lastSuccess: ctbDebugState.stopMatch.lastSuccess || null };
-      }
-      renderCtbDebug();
-    }
-
-    async function debugStopMatch() {
-      const previous = ctbDebugState.stopMatch || {};
-      if (ctbDebugState.stopMatch?.status === 'OK') return;
-      ctbDebugState.stopMatch = { ...previous, status: 'PENDING' };
-      renderCtbDebug();
-      try {
-        const { json, http, ms } = await ctbDebugFetch(CTB_DEBUG_ENDPOINTS.stop);
-        const rows = extractData(json);
-        const item = rows[0] || json?.data || null;
-        if (!item) throw new Error('Stop API 沒有返回 stop data');
-        const stopId = String(item.stop || CTB_DEBUG_SAMPLE.stopId).padStart(6, '0');
-        if (stopId !== CTB_DEBUG_SAMPLE.stopId) throw new Error(`返回 stop ${stopId}，不是 ${CTB_DEBUG_SAMPLE.stopId}`);
-        const now = Date.now();
-        ctbDebugState.stopMatch = {
-          status: 'OK', http, ms, count: rows.length || 1, lastSuccess: now,
-          stop: {
-            stopId,
-            nameTc: item.name_tc || '',
-            nameEn: item.name_en || '',
-            lat: item.lat ?? '',
-            lng: item.long ?? item.lng ?? ''
-          }
-        };
-      } catch (error) {
-        ctbDebugState.stopMatch = { ...previous, status: 'FAIL', error: ctbDebugError(error) };
-      }
-      renderCtbDebug();
-    }
-
-    async function debugEta() {
-      const previous = ctbDebugState.eta || {};
-      ctbDebugState.eta = { ...previous, status: 'PENDING' };
-      renderCtbDebug();
-      try {
-        const { json, http, ms } = await ctbDebugFetch(CTB_DEBUG_ENDPOINTS.eta);
-        const rows = extractData(json);
-        const now = Date.now();
-        ctbDebugState.eta = {
-          status: 'OK', http, ms, count: rows.length, lastSuccess: now,
-          generated: json?.generated_timestamp || '', rows
-        };
-        // This timestamp changes ONLY after a successful live ETA response.
-        markProviderRefresh('ctb');
-      } catch (error) {
-        ctbDebugState.eta = { ...previous, status: 'FAIL', error: ctbDebugError(error) };
-      }
-      renderCtbDebug();
-    }
-
-    function debugNormalizeEta() {
-      const rows = ctbDebugState.eta?.rows || [];
-      const sample = rows[0];
-      if (!sample) {
-        ctbDebugState.normalized = {
-          status: 'FAIL', error: '沒有 ETA record 可供 normalize', lastSuccess: ctbDebugState.normalized.lastSuccess || null
-        };
-      } else {
-        const item = normalizeEtaItem(sample, {
-          provider: 'ctb', stopId: CTB_DEBUG_SAMPLE.stopId, route: CTB_DEBUG_SAMPLE.route,
-          generatedTimestamp: ctbDebugState.eta.generated || ''
-        });
-        const valid = item.provider === 'ctb' && item.route === CTB_DEBUG_SAMPLE.route && item.stop === CTB_DEBUG_SAMPLE.stopId;
-        ctbDebugState.normalized = valid
-          ? { status: 'OK', lastSuccess: Date.now(), item }
-          : { status: 'FAIL', error: 'normalize 後的 provider / route / stop 不正確', item };
-      }
-      renderCtbDebug();
-    }
-
-    async function fetchCtbRouteListForDebug() {
-      const started = performance.now();
-      const json = await ctbDebugFetch('https://rt.data.gov.hk/v2/transport/citybus/route/CTB');
-      const rows = extractData(json)
-        .filter(x => x?.route)
-        .map(x => ({
-          route: String(x.route).toUpperCase(),
-          bound: x.bound || x.dir || x.direction || '',
-          serviceType: x.service_type ?? '',
-          origTc: x.orig_tc || x.origin_tc || '',
-          destTc: x.dest_tc || x.destination_tc || '',
-          origEn: x.orig_en || x.origin_en || '',
-          destEn: x.dest_en || x.destination_en || ''
-        }));
-      return { rows, http: json.http, ms: json.ms, elapsed: Math.round(performance.now() - started) };
-    }
-
-    async function ctbFetchRouteStopDebug(route, direction) {
-      const url = `https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(route)}/${direction}`;
-      const { json, http, ms } = await ctbDebugFetch(url);
-      const rows = extractData(json).filter(x => x?.stop).map(x => ({
-        route: String(x.route || route).toUpperCase(),
-        direction,
-        seq: Number(x.seq) || 0,
-        stopId: String(x.stop).padStart(6, '0'),
-        stopNameTc: x.name_tc || x.stop_name_tc || x.nameTc || '',
-        stopNameEn: x.name_en || x.stop_name_en || x.nameEn || '',
-        serviceType: x.service_type ?? '',
-        lat: x.lat ?? '',
-        long: x.long ?? x.lng ?? ''
-      }));
-      return { rows, http, ms };
-    }
-
-    async function runWithConcurrency(items, limit, worker, onProgress) {
-      let next = 0, done = 0;
-      const results = new Array(items.length);
-      const runners = Array.from({ length: Math.min(limit, items.length || 1) }, async () => {
-        while (true) {
-          const i = next++;
-          if (i >= items.length) return;
-          try { results[i] = await worker(items[i], i); }
-          catch (error) { results[i] = { error: ctbDebugError(error) }; }
-          done++;
-          onProgress?.(done, items.length);
-        }
-      });
-      await Promise.all(runners);
-      return results;
-    }
-
-    async function loadCtbFullRouteStopTable() {
-      const state = ctbDebugState.fullTable;
-      state.status = 'LOADING'; state.error = ''; state.rows = []; state.routes = [];
-      state.progress = 0; state.total = 0; state.done = 0;
-      state.routeRows = []; state.stopRows = []; state.stopDetails = new Map();
-      renderCtbDebug();
-      try {
-        // 1) Full CTB route table
-        const routeUrl = 'https://rt.data.gov.hk/v2/transport/citybus/route/CTB';
-        const routeResult = await ctbDebugFetch(routeUrl);
-        const routeRows = extractData(routeResult.json)
-          .filter(x => x?.route)
-          .map(x => ({
-            route: String(x.route).toUpperCase(),
-            bound: x.bound || x.dir || x.direction || '',
-            serviceType: x.service_type ?? '',
-            origTc: x.orig_tc || x.origin_tc || '',
-            destTc: x.dest_tc || x.destination_tc || '',
-            origEn: x.orig_en || x.origin_en || '',
-            destEn: x.dest_en || x.destination_en || ''
-          }));
-        state.routeRows = routeRows;
-        state.routes = routeRows;
-        state.routeMeta = { status:'OK', http:routeResult.http, ms:routeResult.ms, count:routeRows.length, url:routeUrl };
-
-        // 2) Full Route-Stop table. One request per route/direction.
-        const routeDirections = [];
-        const seenRD = new Set();
-        routeRows.forEach(r => {
-          const dir = String(r.bound || '').toLowerCase();
-          const directions = dir === 'inbound' || dir === 'outbound' ? [dir]
-            : (String(r.bound || '').toUpperCase() === 'I' ? ['inbound']
-            : String(r.bound || '').toUpperCase() === 'O' ? ['outbound']
-            : ['inbound','outbound']);
-          directions.forEach(d => {
-            const key = `${r.route}|${d}`;
-            if (!seenRD.has(key)) { seenRD.add(key); routeDirections.push({ route:r.route, direction:d }); }
-          });
-        });
-        state.total = routeDirections.length;
-        const rsResults = await runWithConcurrency(routeDirections, 6, async rd => {
-          try {
-            const url = `https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(rd.route)}/${rd.direction}`;
-            const result = await ctbDebugFetch(url);
-            const rows = extractData(result.json).filter(x => x?.stop).map(x => ({
-              route: String(x.route || rd.route).toUpperCase(),
-              direction: rd.direction,
-              seq: Number(x.seq) || 0,
-              stopId: String(x.stop).padStart(6, '0'),
-              serviceType: x.service_type ?? '',
-              status: 'OK',
-              routeStopHttp: result.http,
-              routeStopMs: result.ms,
-              routeStopUrl: url
-            }));
-            return { ...rd, status:'OK', http:result.http, ms:result.ms, count:rows.length, rows };
-          } catch (error) {
-            return { ...rd, status:'FAIL', error:ctbDebugError(error), rows:[] };
-          }
-        }, (done,total) => { state.done=done; state.progress=total ? Math.round(done/total*100) : 0; renderCtbDebug(); });
-
-        state.routeStopRows = rsResults;
-        state.rows = rsResults.flatMap(x => x.rows || []);
-
-        // 3) Unique stop IDs. We expose these immediately, then test Stop Detail separately.
-        const uniqueStops = [...new Map(state.rows.map(r => [r.stopId, { stopId:r.stopId }])).values()];
-        state.uniqueStops = uniqueStops;
-        state.stopTotal = uniqueStops.length;
-        state.stopDone = 0;
-        state.stopStatus = 'NOT_TESTED';
-        state.status = 'OK';
-        state.progress = 100;
-        state.done = state.total;
-        state.loadedAt = Date.now();
-      } catch (error) {
-        state.status = 'FAIL';
-        state.error = ctbDebugError(error);
-      }
-      renderCtbDebug();
-    }
-
-    async function testAllCtbStopDetails() {
-      const state = ctbDebugState.fullTable;
-      const stops = state.uniqueStops || [];
-      if (!stops.length) return;
-      state.stopStatus = 'LOADING'; state.stopDone = 0; state.stopError = '';
-      renderCtbDebug();
-      const results = await runWithConcurrency(stops, 6, async item => {
-        const url = `https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(item.stopId)}`;
-        try {
-          const result = await ctbDebugFetch(url);
-          const items = extractData(result.json);
-          const x = items[0] || result.json?.data || result.json;
-          return {
-            stopId:item.stopId,
-            status: result.http === 200 && x ? 'OK' : `HTTP ${result.http}`,
-            http:result.http, ms:result.ms,
-            nameTc:x?.name_tc || x?.stop_name_tc || x?.nameTc || '',
-            nameEn:x?.name_en || x?.stop_name_en || x?.nameEn || '',
-            lat:x?.lat ?? '', long:x?.long ?? '',
-            url
-          };
-        } catch(error) {
-          return { stopId:item.stopId, status:'FAIL', error:ctbDebugError(error), url };
-        }
-      }, (done,total) => { state.stopDone=done; state.stopStatus=done===total ? 'DONE' : 'LOADING'; renderCtbDebug(); });
-      state.stopRows = results;
-      state.stopStatus = 'DONE';
-      state.stopError = results.every(x => x.status !== 'OK') ? '所有 Stop Detail 請求均失敗' : '';
-      state.stopDetails = new Map(results.map(x => [x.stopId,x]));
-      state.rows = state.rows.map(r => ({ ...r, ...(state.stopDetails.get(r.stopId) || {}) }));
-      renderCtbDebug();
-    }
-
-    function downloadCtbFullTableCsv() {
-      const state = ctbDebugState.fullTable;
-      const rows = state.rows || [];
-      if (!rows.length) return;
-      const headers = ['Route','Direction','Seq','Stop ID','Stop Name TC','Stop Name EN','Lat','Long','Service Type','Route-Stop Status','Stop Status','Route-Stop Parameter','Route-Stop Link','Stop Parameter','Stop Link','ETA Parameter','ETA Link'];
-      const csvEscape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-      const lines = [headers.map(csvEscape).join(',')];
-      rows.forEach(r => {
-        const routeStopUrl = r.routeStopUrl || `https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(r.route)}/${r.direction}`;
-        const stopUrl = `https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(r.stopId)}`;
-        const etaUrl = `https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${encodeURIComponent(r.stopId)}/${encodeURIComponent(r.route)}`;
-        const d = state.stopDetails?.get(r.stopId) || {};
-        lines.push([
-          r.route,r.direction,r.seq,r.stopId,d.nameTc || r.nameTc || '',d.nameEn || r.nameEn || '',d.lat ?? r.lat ?? '',d.long ?? r.long ?? '',r.serviceType ?? '',r.status || '',d.status || '',
-          `route-stop/CTB/${r.route}/${r.direction}`,routeStopUrl,
-          `stop/${r.stopId}`,stopUrl,
-          `eta/CTB/${r.stopId}/${r.route}`,etaUrl
-        ].map(csvEscape).join(','));
-      });
-      const blob = new Blob(['\ufeff' + lines.join('\n')], { type:'text/csv;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `ctb-all-route-stop-${new Date().toISOString().slice(0,10)}.csv`; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
-
-    function renderCtbFullTable() {
-      const state = ctbDebugState.fullTable;
-      const host = document.getElementById('ctb-full-table-host');
-      if (!host) return;
-      const filter = String(document.getElementById('ctb-full-filter')?.value || '').trim().toUpperCase();
-      const routeRows = state.routeRows || [];
-      const rsRows = state.rows || [];
-      const stopRows = state.stopRows || [];
-      const visibleRs = filter ? rsRows.filter(r => [r.route,r.direction,r.seq,r.stopId,r.status].join(' ').toUpperCase().includes(filter)) : rsRows;
-      const visibleStops = filter ? stopRows.filter(r => [r.stopId,r.nameTc,r.nameEn,r.status].join(' ').toUpperCase().includes(filter)) : stopRows;
-      const routeVisible = filter ? routeRows.filter(r => [r.route,r.bound,r.serviceType,r.origTc,r.destTc,r.origEn,r.destEn].join(' ').toUpperCase().includes(filter)) : routeRows;
-      const link = (url,label) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-      const routeTable = routeRows.length ? `<h3>① Route table (${routeVisible.length}/${routeRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Route</th><th>Bound</th><th>Service</th><th>Origin TC</th><th>Destination TC</th><th>Origin EN</th><th>Destination EN</th><th>Route API</th></tr></thead><tbody>${routeVisible.map(r => { const u=`https://rt.data.gov.hk/v2/transport/citybus/route/CTB/${encodeURIComponent(r.route)}`; return `<tr><td class="mono">${escapeHtml(r.route)}</td><td>${escapeHtml(r.bound)}</td><td>${escapeHtml(r.serviceType)}</td><td>${escapeHtml(r.origTc)}</td><td>${escapeHtml(r.destTc)}</td><td>${escapeHtml(r.origEn)}</td><td>${escapeHtml(r.destEn)}</td><td>${link(u,'Route')}</td></tr>`; }).join('')}</tbody></table></div>` : '';
-      const rsTable = rsRows.length ? `<h3>② Route-Stop table (${visibleRs.length}/${rsRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Route</th><th>Direction</th><th>Seq</th><th>Stop ID</th><th>Service</th><th>Status</th><th>Testing Parameter</th><th>Test Link</th></tr></thead><tbody>${visibleRs.map(r => { const u=r.routeStopUrl||`https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/${encodeURIComponent(r.route)}/${r.direction}`; const eta=`https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${encodeURIComponent(r.stopId)}/${encodeURIComponent(r.route)}`; const stop=`https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(r.stopId)}`; return `<tr><td class="mono">${escapeHtml(r.route)}</td><td>${escapeHtml(r.direction)}</td><td class="mono">${escapeHtml(r.seq)}</td><td class="mono">${escapeHtml(r.stopId)}</td><td>${escapeHtml(r.serviceType)}</td><td>${escapeHtml(r.status)}</td><td class="mono">route-stop/CTB/${escapeHtml(r.route)}/${escapeHtml(r.direction)}</td><td>${link(u,'Route-Stop')} ${link(stop,'Stop')} ${link(eta,'ETA')}</td></tr>`; }).join('')}</tbody></table></div>` : '';
-      const stopTable = stopRows.length ? `<h3>③ Stop Detail table (${visibleStops.length}/${stopRows.length})</h3><div class="ctb-full-table-scroll"><table class="ctb-full-table"><thead><tr><th>Stop ID</th><th>站名 TC</th><th>Stop EN</th><th>Lat</th><th>Long</th><th>Status</th><th>HTTP</th><th>ms</th><th>Testing Parameter</th><th>Test Link</th></tr></thead><tbody>${visibleStops.map(r => { return `<tr><td class="mono">${escapeHtml(r.stopId)}</td><td>${escapeHtml(r.nameTc)}</td><td>${escapeHtml(r.nameEn)}</td><td class="mono">${escapeHtml(r.lat)}</td><td class="mono">${escapeHtml(r.long)}</td><td>${escapeHtml(r.status)}</td><td>${escapeHtml(r.http||'')}</td><td>${escapeHtml(r.ms||'')}</td><td class="mono">stop/${escapeHtml(r.stopId)}</td><td>${link(r.url,'Stop')}</td></tr>`; }).join('')}</tbody></table></div>` : '';
-      const etaTable = rsRows.length ? `<h3>④ ETA testing table</h3>` : '';
-      const progress = state.total ? `${state.done}/${state.total} Route-Stop requests · ${state.progress}%` : '';
-      host.innerHTML = `<div class="ctb-full-table-wrap"><div class="ctb-full-table-toolbar"><input id="ctb-full-filter" placeholder="搜尋 route / stop / 名稱..." value="${escapeHtml(filter)}"><button class="ctb-debug-btn secondary" id="ctb-test-all-stop-details" ${!state.uniqueStops?.length || state.stopStatus==='LOADING' ? 'disabled' : ''}>測試全部 Stop Detail</button><button class="ctb-debug-btn secondary" id="ctb-download-csv" ${!rsRows.length ? 'disabled' : ''}>下載 CSV</button></div><div class="ctb-table-summary">${progress} · Routes: ${routeRows.length} · Route-Stop rows: ${rsRows.length} · Unique stops: ${state.uniqueStops?.length || 0} · Stop Detail: ${state.stopStatus || 'NOT_TESTED'}</div>${state.status==='LOADING' ? `<div class="ctb-progress"><div style="width:${state.progress}%"></div></div>` : ''}${routeTable}${rsTable}${stopTable}${etaTable}</div>`;
-      document.getElementById('ctb-full-filter')?.addEventListener('input', renderCtbFullTable);
-      document.getElementById('ctb-download-csv')?.addEventListener('click', downloadCtbFullTableCsv);
-      document.getElementById('ctb-test-all-stop-details')?.addEventListener('click', testAllCtbStopDetails);
-    }).join('');
-
-      container.innerHTML = `
-        <div id="ctb-full-table-host"></div>
-        ${etaRows.length ? `<div class="ctb-sample-table"><div class="ctb-sample-head"><span>Route</span><span>Stop</span><span>ETA</span><span>Remark</span></div>${sampleRows}</div>` : ''}
-      </div>`;
-
-      document.getElementById('ctb-test-all')?.addEventListener('click', runCtbDebug);
-      document.getElementById('ctb-test-eta')?.addEventListener('click', async () => {
-        await debugEta();
-        debugNormalizeEta();
-      });
-      document.getElementById('ctb-load-full-table')?.addEventListener('click', loadCtbFullRouteStopTable);
-      document.getElementById('ctb-refresh-static')?.addEventListener('click', async () => {
-        await loadUnifiedStaticData(true);
-        renderCtbDebug();
-      });
-      renderCtbFullTable();
-    }
-
-    async function runCtbDebug() {
-      if (currentMode !== 'ctb-debug') return;
-      ctbDebugState.lastRun = Date.now();
-      await debugRouteStop();
-      await debugStopMatch();
-      await debugEta();
-      debugNormalizeEta();
-      renderCtbDebug();
-    }
-
-    function attachModeHandlers() {
-      document.querySelectorAll('.mode-button').forEach(button => {
-        button.addEventListener('click', async () => {
-          const selectedMode = button.dataset.mode;
-          if (selectedMode === currentMode) return;
-
-          currentMode = selectedMode;
-
-          document.querySelectorAll('.mode-button').forEach(b =>
-            b.classList.toggle('active', b.dataset.mode === currentMode)
-          );
-
-          updateSearchVisibility();
-
-          const etaContainerEl = document.getElementById('eta-container');
-          if (etaContainerEl) {
-            etaContainerEl.classList.toggle('daily-columns', currentMode === 'daily');
-          }
-
-          if (currentMode === 'ctb-debug') {
-            stopEtaLoop();
-            renderCtbDebug();
-            return;
-          }
-
-          if (currentMode === 'daily') {
-            if (savedRoutes.length > 0) {
-              activeStopIds = [...new Set(
-                savedRoutes.map(item => ({
-                  stopId: item.stopId,
-                  provider: item.provider || 'kmb'
-                }))
-              )];
-              updateMetaText('已儲存站點');
-              startEtaLoop();
-            } else {
-              activeStopIds = [];
-              stopEtaLoop();
-              document.getElementById('eta-container').innerHTML = '';
-              updateMetaText('已儲存站點');
-            }
-          } else {
-            await initNearbyStops();
-          }
-        });
-      });
-
-      const searchInput = document.getElementById('nearby-search');
-
-      if (searchInput) {
-        searchInput.addEventListener('input', debounce(async event => {
-          if (currentMode !== 'nearby') return;
-
-          const value = event.target.value.trim().toUpperCase();
-
-          if (!value) {
-            activeStopIds = nearbyStopIds.slice();
+        if (currentMode === 'daily') {
+          if (savedRoutes.length > 0) {
+            activeStopIds = [...new Set(savedRoutes.map(item => ({ stopId: item.stopId, provider: item.provider || 'kmb' })))];
+            updateMetaText('已儲存站點');
             startEtaLoop();
-            return;
+          } else {
+            activeStopIds = [];
+            stopEtaLoop();
+            document.getElementById('eta-container').innerHTML = '<div class="status-msg">暫無已儲存路線。</div>';
+            updateMetaText('已儲存站點');
           }
+        } else {
+          await initNearbyStops();
+        }
+      });
+    });
 
-          const rows = await findRouteStopsAcrossProviders(value);
-          let targetStops = rows.map(s => ({
-            stopId: s.stopId,
-            provider: s.provider || 'kmb'
-          })).slice(0, 80);
+    const searchInput = document.getElementById('nearby-search');
+    if (searchInput) {
+      searchInput.addEventListener('input', debounce(async event => {
+        if (currentMode !== 'nearby') return;
+        const value = event.target.value.trim().toUpperCase();
 
-          if (targetStops.length === 0) {
-            document.getElementById('eta-container').innerHTML =
-              '<div class="status-msg">沒有符合搜尋條件的路線。</div>';
-            return;
-          }
-
-          activeStopIds = targetStops;
+        if (!value) {
+          activeStopIds = nearbyStopIds.slice();
           startEtaLoop();
-        }, 300));
-      }
-
-      document.addEventListener('click', event => {
-        const target = event.target.closest('[data-action]');
-        if (!target) return;
-
-        if (target.dataset.action === 'save-route') {
-          addSavedRoute(
-            target.dataset.route,
-            target.dataset.dest,
-            target.dataset.stop,
-            target.dataset.provider || 'kmb',
-            target.dataset.serviceType || 1,
-            target.dataset.dir || ''
-          );
-
-          target.dataset.action = 'remove-saved-route';
-          target.textContent = '★';
-          target.classList.add('saved');
           return;
         }
 
-        if (target.dataset.action === 'remove-saved-route') {
-          removeSavedRoute(target.dataset.key);
+        const rows = await findRouteStopsAcrossProviders(value);
+        let targetStops = rows.map(s => ({ stopId: s.stopId, provider: s.provider || 'kmb' })).slice(0, 80);
+
+        if (targetStops.length === 0) {
+          document.getElementById('eta-container').innerHTML = '<div class="status-msg">沒有符合搜尋條件的路線。</div>';
+          return;
+        }
+
+        activeStopIds = targetStops;
+        startEtaLoop();
+      }, 300));
+    }
+
+    document.addEventListener('click', event => {
+      const target = event.target.closest('[data-action]');
+      if (!target) return;
+
+      if (target.dataset.action === 'save-route') {
+        addSavedRoute(target.dataset.route, target.dataset.dest, target.dataset.stop, target.dataset.provider || 'kmb', target.dataset.serviceType || 1, target.dataset.dir || '');
+        target.dataset.action = 'remove-saved-route';
+        target.textContent = '★';
+        target.classList.add('saved');
+        return;
+      }
+
+      if (target.dataset.action === 'remove-saved-route') {
+        removeSavedRoute(target.dataset.key);
+        if (currentMode === 'daily') {
+          activeStopIds = [...new Set(savedRoutes.map(item => ({ stopId: item.stopId, provider: item.provider || 'kmb' })))];
+          fetchEtas();
+        } else {
           target.dataset.action = 'save-route';
           target.textContent = '☆';
           target.classList.remove('saved');
         }
-      });
-    }
-
-    function requestLocation() {
-      if (!('geolocation' in navigator)) return;
-
-      navigator.geolocation.getCurrentPosition(
-        pos => {
-          applyLocation(pos.coords.latitude, pos.coords.longitude, 'device');
-
-          if (activeStopIds.length > 0) fetchEtas();
-          fetchWeather();
-        },
-        err => {
-          usePresetMongKokLocation(err?.message || 'geolocation failed');
-          if (activeStopIds.length > 0) fetchEtas();
-          fetchWeather();
-        },
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
-    }
-
-    async function initDashboard() {
-      loadSavedRoutes();
-      attachModeHandlers();
-
-      const etaContainerEl = document.getElementById('eta-container');
-      if (etaContainerEl) {
-        etaContainerEl.classList.toggle('daily-columns', currentMode === 'daily');
       }
+    });
+  }
 
-      await initStops();
-      requestLocation();
+  function requestLocation() {
+    if (!('geolocation' in navigator)) return;
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        applyLocation(pos.coords.latitude, pos.coords.longitude, 'device');
+        if (activeStopIds.length > 0) fetchEtas();
+        fetchWeather();
+      },
+      err => {
+        usePresetMongKokLocation(err?.message || 'geolocation failed');
+        if (activeStopIds.length > 0) fetchEtas();
+        fetchWeather();
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }
 
-      if (currentMode === 'daily') {
-        if (savedRoutes.length > 0) {
-          activeStopIds = [...new Set(
-            savedRoutes.map(item => ({
-              stopId: item.stopId,
-              provider: item.provider || 'kmb'
-            }))
-          )];
+  async function initDashboard() {
+    loadSavedRoutes();
+    attachModeHandlers();
 
-          updateMetaText('已儲存站點');
-          fetchWeather();
-          startEtaLoop();
-          return;
-        }
+    const etaContainerEl = document.getElementById('eta-container');
+    if (etaContainerEl) etaContainerEl.classList.toggle('daily-columns', currentMode === 'daily');
 
-        activeStopIds = [];
-        document.getElementById('eta-container').innerHTML = '';
+    await initStops();
+    requestLocation();
+
+    if (currentMode === 'daily') {
+      if (savedRoutes.length > 0) {
+        activeStopIds = [...new Set(savedRoutes.map(item => ({ stopId: item.stopId, provider: item.provider || 'kmb' })))];
         updateMetaText('已儲存站點');
+        fetchWeather();
+        startEtaLoop();
         return;
       }
-
-      await initNearbyStops();
+      activeStopIds = [];
+      document.getElementById('eta-container').innerHTML = '<div class="status-msg">暫無已儲存路線。</div>';
+      updateMetaText('已儲存站點');
+      return;
     }
 
-    async function fetchKmbStops() {
+    await initNearbyStops();
+  }
+
+  async function fetchKmbStops() {
+    try {
+      const json = await fetchJson(`${getProviderApiBase('kmb')}/stop`);
+      return extractData(json).map(stop => ({ ...stop, provider: normalizeProvider(stop.co) }));
+    } catch (error) { return []; }
+  }
+
+  let ctbStopInventoryCache = null;
+  let ctbStopInventoryFetchedAt = 0;
+  const CTB_STOP_CACHE_TTL = 24 * 60 * 60 * 1000;
+  let ctbStopLoadPromise = null;
+
+  async function fetchCtbStops(force = false) {
+    if (!force && ctbStopInventoryCache && Date.now() - ctbStopInventoryFetchedAt < CTB_STOP_CACHE_TTL) {
+      return ctbStopInventoryCache;
+    }
+    if (!force && ctbStopLoadPromise) return ctbStopLoadPromise;
+
+    ctbStopLoadPromise = (async () => {
       try {
-        const json = await fetchJson(`${getProviderApiBase('kmb')}/stop`);
-        return extractData(json).map(stop => ({
-          ...stop,
-          provider: normalizeProvider(stop.co)
-        }));
-      } catch (error) {
-        return [];
-      }
-    }
+        await getOrFetchRouteDB();
+        const ctbDb = routeDb?.ctb || {};
+        const uniqueStopIds = [...new Set(Object.values(ctbDb).flat().map(row => String(row?.stopId || '').padStart(6, '0')).filter(Boolean))];
+        if (!uniqueStopIds.length) throw new Error('CTB Route-Stop cache empty');
 
-    let ctbStopInventoryCache = null;
-    let ctbStopInventoryFetchedAt = 0;
-    const CTB_STOP_CACHE_TTL = 24 * 60 * 60 * 1000;
-    let ctbStopLoadPromise = null;
+        const results = [];
+        let next = 0;
+        const worker = async () => {
+          while (true) {
+            const index = next++;
+            if (index >= uniqueStopIds.length) return;
+            const stopId = uniqueStopIds[index];
+            try {
+              const json = await fetchJson(`https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(stopId)}`);
+              const item = json?.data && !Array.isArray(json.data) ? json.data : (extractData(json)[0] || null);
+              if (item?.stop) results.push({ ...item, stop: String(item.stop).padStart(6, '0'), provider: 'ctb', co: 'CTB' });
+            } catch (error) {}
+          }
+        };
 
-    async function fetchCtbStops(force = false) {
-      // CTB stop metadata is static data. It is populated from the unique stop IDs
-      // already discovered by the cached CTB Route-Stop database. It is NEVER part
-      // of the 20-second ETA refresh loop.
-      if (!force && ctbStopInventoryCache && Date.now() - ctbStopInventoryFetchedAt < CTB_STOP_CACHE_TTL) {
-        if (typeof ctbDebugState !== 'undefined') {
-          ctbDebugState.stopInventory = {
-            status: 'OK', count: ctbStopInventoryCache.length, cached: true,
-            lastSuccess: ctbStopInventoryFetchedAt, error: ''
-          };
-        }
+        await Promise.all(Array.from({ length: Math.min(8, uniqueStopIds.length) }, worker));
+        const byStop = new Map(results.map(stop => [String(stop.stop).padStart(6, '0'), stop]));
+        ctbStopInventoryCache = [...byStop.values()];
+        ctbStopInventoryFetchedAt = Date.now();
         return ctbStopInventoryCache;
-      }
+      } catch (error) { return []; }
+    })();
 
-      if (!force && ctbStopLoadPromise) return ctbStopLoadPromise;
+    try { return await ctbStopLoadPromise; } finally { ctbStopLoadPromise = null; }
+  }
 
-      ctbStopLoadPromise = (async () => {
-        const started = performance.now();
-        try {
-          // Route-Stop is already loaded/cached by the static-data loader.
-          await getOrFetchRouteDB();
-          const ctbDb = routeDb?.ctb || {};
-          const uniqueStopIds = [...new Set(
-            Object.values(ctbDb).flat().map(row => String(row?.stopId || '').padStart(6, '0')).filter(Boolean)
-          )];
+  const STATIC_DB_NAME = 'hk-bus-dashboard-static';
+  const STATIC_DB_VERSION = 1;
+  const STATIC_DB_STORE = 'snapshots';
+  const STATIC_SNAPSHOT_KEY = 'all-providers-v2';
+  const STATIC_SNAPSHOT_TTL = 24 * 60 * 60 * 1000;
+  let staticDataLoadPromise = null;
 
-          if (!uniqueStopIds.length) {
-            throw new Error('CTB Route-Stop cache contains no stop IDs');
-          }
+  function openStaticDb() {
+    return new Promise((resolve, reject) => {
+      if (!('indexedDB' in window)) return reject(new Error('IndexedDB unavailable'));
+      const req = indexedDB.open(STATIC_DB_NAME, STATIC_DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STATIC_DB_STORE)) db.createObjectStore(STATIC_DB_STORE, { keyPath: 'key' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
+    });
+  }
 
-          const results = [];
-          let done = 0;
-          const concurrency = 8;
-          let next = 0;
-
-          if (typeof ctbDebugState !== 'undefined') {
-            ctbDebugState.stopInventory = {
-              status: 'PENDING', count: 0, rawCount: uniqueStopIds.length,
-              done: 0, total: uniqueStopIds.length, lastSuccess: ctbDebugState.stopInventory?.lastSuccess || null,
-              error: ''
-            };
-            renderCtbDebug?.();
-          }
-
-          const worker = async () => {
-            while (true) {
-              const index = next++;
-              if (index >= uniqueStopIds.length) return;
-              const stopId = uniqueStopIds[index];
-              try {
-                const response = await fetch(
-                  `https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(stopId)}`,
-                  { cache: 'no-store' }
-                );
-                const text = await response.text();
-                let json = null;
-                try { json = JSON.parse(text); } catch (_) {}
-                if (!response.ok) throw new Error(`HTTP ${response.status}${text ? ` · ${text.slice(0, 120)}` : ''}`);
-
-                // Official CTB V2 Stop response puts the stop record in data.
-                // Keep the provider-native fields unchanged; only add provider/co
-                // metadata required by the dashboard's existing provider lookup.
-                const item = json?.data && !Array.isArray(json.data) ? json.data : (extractData(json)[0] || null);
-                if (item?.stop) {
-                  results.push({ ...item, stop: String(item.stop).padStart(6, '0'), provider: 'ctb', co: 'CTB' });
-                }
-              } catch (error) {
-                // One bad stop must not prevent the remaining static stop database
-                // from being populated. The Debug table records the aggregate result.
-              } finally {
-                done++;
-                if (typeof ctbDebugState !== 'undefined') {
-                  ctbDebugState.stopInventory.done = done;
-                  ctbDebugState.stopInventory.count = results.length;
-                  ctbDebugState.stopInventory.progress = Math.round(done / uniqueStopIds.length * 100);
-                  if (done === uniqueStopIds.length) renderCtbDebug?.();
-                }
-              }
-            }
-          };
-
-          await Promise.all(Array.from({ length: Math.min(concurrency, uniqueStopIds.length) }, worker));
-
-          // Deduplicate defensively by CTB stop ID.
-          const byStop = new Map(results.map(stop => [String(stop.stop).padStart(6, '0'), stop]));
-          ctbStopInventoryCache = [...byStop.values()];
-          ctbStopInventoryFetchedAt = Date.now();
-
-          const failed = uniqueStopIds.length - ctbStopInventoryCache.length;
-          if (typeof ctbDebugState !== 'undefined') {
-            ctbDebugState.stopInventory = {
-              status: ctbStopInventoryCache.length ? 'OK' : 'FAIL',
-              http: ctbStopInventoryCache.length ? 200 : undefined,
-              ms: Math.round(performance.now() - started),
-              count: ctbStopInventoryCache.length,
-              rawCount: uniqueStopIds.length,
-              done: uniqueStopIds.length,
-              total: uniqueStopIds.length,
-              progress: 100,
-              failed,
-              lastSuccess: ctbStopInventoryCache.length ? ctbStopInventoryFetchedAt : (ctbDebugState.stopInventory?.lastSuccess || null),
-              error: failed ? `${failed} 個 Stop API 請求失敗` : ''
-            };
-          }
-          return ctbStopInventoryCache;
-        } catch (error) {
-          if (typeof ctbDebugState !== 'undefined') {
-            ctbDebugState.stopInventory = {
-              status: 'FAIL', ms: Math.round(performance.now() - started), count: 0,
-              lastSuccess: ctbDebugState.stopInventory?.lastSuccess || null,
-              error: ctbDebugError(error)
-            };
-          }
-          console.error('CTB stop metadata load failed:', error);
-          return [];
-        }
-      })();
-
-      try {
-        return await ctbStopLoadPromise;
-      } finally {
-        ctbStopLoadPromise = null;
-      }
-    }
-
-    // Unified static-data cache: routes, stops and route-stop relationships are
-    // loaded separately from live ETA and reused for up to 24 hours.
-    const STATIC_DB_NAME = 'hk-bus-dashboard-static';
-    const STATIC_DB_VERSION = 1;
-    const STATIC_DB_STORE = 'snapshots';
-    const STATIC_SNAPSHOT_KEY = 'all-providers-v2';
-    const STATIC_SNAPSHOT_TTL = 24 * 60 * 60 * 1000;
-    let staticDataLoadPromise = null;
-    let staticDataState = { status: 'NOT_READY', source: '', fetchedAt: null, error: '' };
-
-    function openStaticDb() {
-      return new Promise((resolve, reject) => {
-        if (!('indexedDB' in window)) {
-          reject(new Error('IndexedDB unavailable'));
-          return;
-        }
-        const req = indexedDB.open(STATIC_DB_NAME, STATIC_DB_VERSION);
-        req.onupgradeneeded = () => {
-          const db = req.result;
-          if (!db.objectStoreNames.contains(STATIC_DB_STORE)) {
-            db.createObjectStore(STATIC_DB_STORE, { keyPath: 'key' });
-          }
-        };
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
+  async function readStaticSnapshot() {
+    try {
+      const db = await openStaticDb();
+      const snapshot = await new Promise((resolve, reject) => {
+        const tx = db.transaction(STATIC_DB_STORE, 'readonly');
+        const req = tx.objectStore(STATIC_DB_STORE).get(STATIC_SNAPSHOT_KEY);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
       });
-    }
+      db.close();
+      if (snapshot?.fetchedAt && Date.now() - snapshot.fetchedAt < STATIC_SNAPSHOT_TTL) return snapshot;
+    } catch (e) {}
+    return null;
+  }
 
-    async function readStaticSnapshot() {
-      try {
-        const db = await openStaticDb();
-        const snapshot = await new Promise((resolve, reject) => {
-          const tx = db.transaction(STATIC_DB_STORE, 'readonly');
-          const req = tx.objectStore(STATIC_DB_STORE).get(STATIC_SNAPSHOT_KEY);
-          req.onsuccess = () => resolve(req.result || null);
-          req.onerror = () => reject(req.error);
-        });
-        db.close();
-        if (snapshot?.fetchedAt && Date.now() - snapshot.fetchedAt < STATIC_SNAPSHOT_TTL) {
-          return snapshot;
-        }
-      } catch (e) {
-        // IndexedDB unavailable/corrupt: fall through to normal network load.
-      }
-      return null;
-    }
-
-    async function writeStaticSnapshot(snapshot) {
-      try {
-        const db = await openStaticDb();
-        await new Promise((resolve, reject) => {
-          const tx = db.transaction(STATIC_DB_STORE, 'readwrite');
-          tx.objectStore(STATIC_DB_STORE).put(snapshot);
-          tx.oncomplete = resolve;
-          tx.onerror = () => reject(tx.error);
-        });
-        db.close();
-        return true;
-      } catch (e) {
-        return false;
-      }
-    }
-
-    function buildStaticSnapshot(fetchedAt = Date.now()) {
-      return { key: STATIC_SNAPSHOT_KEY, fetchedAt, allStops, routeDb };
-    }
-
-    function applyStaticSnapshot(snapshot) {
-      if (!snapshot?.routeDb) return false;
-      allStops = Array.isArray(snapshot.allStops) ? snapshot.allStops : [];
-      routeDb = snapshot.routeDb || { kmb: {}, lwb: {}, ctb: {} };
-      routeDb.kmb ||= {};
-      routeDb.lwb ||= {};
-      routeDb.ctb ||= {};
-      buildStopMetaMap();
-      staticDataState = { status: 'READY', source: 'IndexedDB', fetchedAt: snapshot.fetchedAt || null, error: '' };
-      ctbRouteStopLastLoadedAt = snapshot.fetchedAt || Date.now();
+  async function writeStaticSnapshot(snapshot) {
+    try {
+      const db = await openStaticDb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(STATIC_DB_STORE, 'readwrite');
+        tx.objectStore(STATIC_DB_STORE).put(snapshot);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+      db.close();
       return true;
-    }
+    } catch (e) { return false; }
+  }
 
-    async function loadUnifiedStaticData(force = false) {
-      if (!force && staticDataLoadPromise) return staticDataLoadPromise;
+  function applyStaticSnapshot(snapshot) {
+    if (!snapshot?.routeDb) return false;
+    allStops = Array.isArray(snapshot.allStops) ? snapshot.allStops : [];
+    routeDb = snapshot.routeDb || { kmb: {}, lwb: {}, ctb: {} };
+    buildStopMetaMap();
+    ctbRouteStopLastLoadedAt = snapshot.fetchedAt || Date.now();
+    return true;
+  }
 
-      staticDataLoadPromise = (async () => {
-        if (!force) {
-          const cached = await readStaticSnapshot();
-          if (cached && applyStaticSnapshot(cached)) return true;
-        }
+  async function loadUnifiedStaticData(force = false) {
+    if (!force && staticDataLoadPromise) return staticDataLoadPromise;
 
-        staticDataState = { status: 'LOADING', source: 'network', fetchedAt: null, error: '' };
+    staticDataLoadPromise = (async () => {
+      if (!force) {
+        const cached = await readStaticSnapshot();
+        if (cached && applyStaticSnapshot(cached)) return true;
+      }
 
+      try {
+        allStops = await fetchKmbStops();
+        routeDb = { kmb: {}, lwb: {}, ctb: {} };
         try {
-          // KMB/LWB static stop data.
-          const kmbStops = await fetchKmbStops();
-          allStops = kmbStops;
-
-          // KMB/LWB static route-stop relationships.
-          routeDb = { kmb: {}, lwb: {}, ctb: {} };
-          try {
-            const json = await fetchJson(`${getProviderApiBase('kmb')}/route-stop`);
-            extractData(json).forEach(item => {
-              if (!item?.route || !item?.stop) return;
-              const provider = normalizeProvider(item.co);
-              const route = String(item.route).toUpperCase();
-              if (!routeDb[provider][route]) routeDb[provider][route] = [];
-              routeDb[provider][route].push({
-                route,
-                stopId: String(item.stop),
-                seq: parseInt(item.seq, 10) || 0,
-                dir: normalizeDirection(item.dir || item.bound),
-                serviceType: normalizeServiceType(item.service_type),
-                provider,
-                providerCode: getProvider(provider).code
-              });
+          const json = await fetchJson(`${getProviderApiBase('kmb')}/route-stop`);
+          extractData(json).forEach(item => {
+            if (!item?.route || !item?.stop) return;
+            const provider = normalizeProvider(item.co);
+            const route = String(item.route).toUpperCase();
+            if (!routeDb[provider][route]) routeDb[provider][route] = [];
+            routeDb[provider][route].push({
+              route,
+              stopId: String(item.stop),
+              seq: parseInt(item.seq, 10) || 0,
+              dir: normalizeDirection(item.dir || item.bound),
+              serviceType: normalizeServiceType(item.service_type),
+              provider,
+              providerCode: getProvider(provider).code
             });
-          } catch (e) {}
+          });
+        } catch (e) {}
 
-          // CTB static route-stop relationships: once per day, never from ETA loop.
-          await loadCtbRouteStopDatabase(true);
+        await loadCtbRouteStopDatabase(true);
+        const ctbStops = await fetchCtbStops(true);
 
-          // CTB static stop inventory if available. Current API may still reject
-          // this request; failure is isolated and does not block ETA functionality.
-          const ctbStops = await fetchCtbStops(true);
-          if (ctbStops.length) {
-            const seen = new Set(allStops.map(stop => getStopKey(stop.stop, stop.provider)));
-            ctbStops.forEach(stop => {
-              const key = getStopKey(stop.stop, stop.provider);
-              if (!seen.has(key)) {
-                allStops.push(stop);
-                seen.add(key);
-              }
-            });
-          }
-
-          buildStopMetaMap();
-          const fetchedAt = Date.now();
-          await writeStaticSnapshot(buildStaticSnapshot(fetchedAt));
-          try {
-            localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: fetchedAt, data: routeDb }));
-          } catch (e) {}
-          ctbRouteStopLastLoadedAt = fetchedAt;
-          staticDataState = { status: 'READY', source: 'network', fetchedAt, error: '' };
-          return true;
-        } catch (error) {
-          staticDataState = { status: 'FAIL', source: 'network', fetchedAt: null, error: ctbDebugError(error) };
-          return false;
+        if (ctbStops.length) {
+          const seen = new Set(allStops.map(stop => getStopKey(stop.stop, stop.provider)));
+          ctbStops.forEach(stop => {
+            const key = getStopKey(stop.stop, stop.provider);
+            if (!seen.has(key)) {
+              allStops.push(stop);
+              seen.add(key);
+            }
+          });
         }
-      })();
 
-      try {
-        return await staticDataLoadPromise;
-      } finally {
-        staticDataLoadPromise = null;
-      }
+        buildStopMetaMap();
+        const fetchedAt = Date.now();
+        await writeStaticSnapshot({ key: STATIC_SNAPSHOT_KEY, fetchedAt, allStops, routeDb });
+        try { localStorage.setItem(ROUTE_DB_KEY, JSON.stringify({ timestamp: fetchedAt, data: routeDb })); } catch (e) {}
+        ctbRouteStopLastLoadedAt = fetchedAt;
+        return true;
+      } catch (error) { return false; }
+    })();
+
+    try { return await staticDataLoadPromise; } finally { staticDataLoadPromise = null; }
+  }
+
+  async function initStops() {
+    const loaded = await loadUnifiedStaticData(false);
+    if (!loaded && allStops.length === 0) {
+      const [kmbStops, ctbStops] = await Promise.all([fetchKmbStops(), fetchCtbStops(false)]);
+      allStops = [...kmbStops, ...ctbStops];
+    }
+    buildStopMetaMap();
+  }
+
+  async function initNearbyStops() {
+    if (allStops.length === 0) await initStops();
+
+    if (!('geolocation' in navigator)) {
+      usePresetMongKokLocation('browser does not support geolocation');
+      onLocationSuccess({ coords: { latitude: PRESET_TEST_LOCATION.lat, longitude: PRESET_TEST_LOCATION.lng } }, 'preset-mong-kok');
+      return;
     }
 
-    async function initStops() {
-      const loaded = await loadUnifiedStaticData(false);
-      if (!loaded && allStops.length === 0) {
-        const [kmbStops, ctbStops] = await Promise.all([fetchKmbStops(), fetchCtbStops(false)]);
-        allStops = [...kmbStops, ...ctbStops];
-      }
-      buildStopMetaMap();
+    navigator.geolocation.getCurrentPosition(onLocationSuccess, onLocationError, { enableHighAccuracy: true, timeout: 10000 });
+  }
 
-      if (typeof ctbDebugState !== 'undefined') {
-        const ctbCount = allStops.filter(x => normalizeProvider(x.provider || x.co) === 'ctb').length;
-        ctbDebugState.stopInventory = {
-          ...(ctbDebugState.stopInventory || {}),
-          count: ctbCount,
-          status: ctbCount ? 'OK' : (ctbDebugState.stopInventory?.status || 'FAIL'),
-          error: ctbDebugState.stopInventory?.error || ''
-        };
-      }
+  function onLocationSuccess(position, source = 'device') {
+    const userLat = position.coords.latitude;
+    const userLong = position.coords.longitude;
+    applyLocation(userLat, userLong, source);
+
+    const nearbyStops = allStops.filter(stop => {
+      const lat = parseFloat(stop.lat);
+      const lng = parseFloat(stop.long);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+      return getDistanceKm(userLat, userLong, lat, lng) <= 0.3;
+    });
+
+    nearbyStopIds = nearbyStops.map(stop => ({ stopId: stop.stop, provider: stop.provider || 'kmb' }));
+    activeStopIds = nearbyStopIds.slice();
+
+    if (activeStopIds.length === 0) {
+      document.getElementById('eta-container').innerHTML = '<div class="status-msg">300公尺範圍內沒有巴士站。</div>';
+      updateMetaText('沒有附近站點');
+      return;
     }
 
-    async function buildCtbNearbyStopsFromRoutes() {
-      if (!userLocation) return [];
-      try {
-        // Static CTB route-stop relationships are loaded/cached separately.
-        // This function only reads the cache and performs no route-stop API calls.
-        await loadCtbRouteStopDatabase();
-        const candidates = new Map();
-        Object.values(routeDb.ctb || {}).flat().forEach(row => {
-          if (!candidates.has(row.stopId)) candidates.set(row.stopId, row);
-        });
+    updateMetaText(locationSource === 'preset-mong-kok' ? '旺角測試位置 · 附近站點（約300公尺）' : '附近站點（約300公尺）');
+    startEtaLoop();
+  }
 
-        // Stop metadata remains a separate concern; when unavailable, retain
-        // the stop ID and let ETA data continue to work.
-        return [...candidates.values()];
-      } catch (e) {
-        console.warn('CTB static route-stop database unavailable:', e);
-        return [];
-      }
+  function onLocationError(error) {
+    usePresetMongKokLocation(error?.message || 'location unavailable');
+    onLocationSuccess({ coords: { latitude: PRESET_TEST_LOCATION.lat, longitude: PRESET_TEST_LOCATION.lng } }, 'preset-mong-kok');
+    updateMetaText('旺角測試位置 · 約300公尺');
+  }
+
+  function stopEtaLoop() {
+    if (etaPollTimer) {
+      clearInterval(etaPollTimer);
+      etaPollTimer = null;
     }
+  }
 
-    async function initNearbyStops() {
-      if (allStops.length === 0) await initStops();
-
-      if (!('geolocation' in navigator)) {
-        usePresetMongKokLocation('browser does not support geolocation');
-        onLocationSuccess({ coords: { latitude: PRESET_TEST_LOCATION.lat, longitude: PRESET_TEST_LOCATION.lng } }, 'preset-mong-kok');
-        return;
-      }
-
-      navigator.geolocation.getCurrentPosition(
-        onLocationSuccess,
-        onLocationError,
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
-    }
-
-    function onLocationSuccess(position, source = 'device') {
-      const userLat = position.coords.latitude;
-      const userLong = position.coords.longitude;
-
-      applyLocation(userLat, userLong, source);
-
-      const nearbyStops = allStops.filter(stop => {
-        const lat = parseFloat(stop.lat);
-        const lng = parseFloat(stop.long);
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
-
-        const dist = getDistanceKm(userLat, userLong, lat, lng);
-        return dist <= 0.3;
-      });
-
-      nearbyStopIds = nearbyStops.map(stop => ({
-        stopId: stop.stop,
-        provider: stop.provider || 'kmb'
-      }));
-
-      activeStopIds = nearbyStopIds.slice();
-
-      if (activeStopIds.length === 0) {
-        document.getElementById('eta-container').innerHTML =
-          '<div class="status-msg">300公尺範圍內沒有巴士站。</div>';
-        updateMetaText('沒有附近站點');
-        return;
-      }
-
-      updateMetaText(locationSource === 'preset-mong-kok' ? '旺角測試位置 · 附近站點（約300公尺）' : '附近站點（約300公尺）');
-      startEtaLoop();
-    }
-
-    function onLocationError(error) {
-      usePresetMongKokLocation(error?.message || 'location unavailable');
-      onLocationSuccess({
-        coords: {
-          latitude: PRESET_TEST_LOCATION.lat,
-          longitude: PRESET_TEST_LOCATION.lng
-        }
-      }, 'preset-mong-kok');
-      updateMetaText('旺角測試位置 · 約300公尺');
-    }
-
-    function stopEtaLoop() {
-      if (etaPollTimer) {
-        clearInterval(etaPollTimer);
-        etaPollTimer = null;
-      }
-    }
-
-    function getPollingInterval() {
-      // Keep the dashboard refresh at 20 seconds as requested.
-      return 20000;
-    }
-
-    function scheduleNextEtaPoll() {
-      stopEtaLoop();
-
-      if (!activeStopIds.length) return;
-
-      const interval = getPollingInterval();
-      etaPollTimer = setTimeout(async () => {
-        await fetchEtas();
-        scheduleNextEtaPoll();
-      }, interval);
-    }
-
-    async function startEtaLoop() {
-      stopEtaLoop();
+  function scheduleNextEtaPoll() {
+    stopEtaLoop();
+    if (!activeStopIds.length) return;
+    etaPollTimer = setTimeout(async () => {
       await fetchEtas();
       scheduleNextEtaPoll();
+    }, 20000);
+  }
+
+  async function startEtaLoop() {
+    stopEtaLoop();
+    await fetchEtas();
+    scheduleNextEtaPoll();
+  }
+
+  function enqueueRequest(task) {
+    return new Promise((resolve, reject) => {
+      requestQueue.push({ task, resolve, reject });
+      pumpRequestQueue();
+    });
+  }
+
+  function pumpRequestQueue() {
+    while (activeRequests < REQUEST_CONCURRENCY && requestQueue.length) {
+      const item = requestQueue.shift();
+      activeRequests++;
+      Promise.resolve()
+        .then(item.task)
+        .then(item.resolve)
+        .catch(item.reject)
+        .finally(() => {
+          activeRequests--;
+          pumpRequestQueue();
+        });
     }
+  }
 
-    function enqueueRequest(task) {
-      return new Promise((resolve, reject) => {
-        requestQueue.push({ task, resolve, reject });
-        pumpRequestQueue();
-      });
-    }
+  async function fetchWithCache(url) {
+    const cached = etaCache.get(url);
+    if (cached && Date.now() - cached.timestamp < ETA_CACHE_TTL) return cached.json;
+    const json = await enqueueRequest(() => fetchJson(url));
+    etaCache.set(url, { timestamp: Date.now(), json });
+    return json;
+  }
 
-    function pumpRequestQueue() {
-      while (activeRequests < REQUEST_CONCURRENCY && requestQueue.length) {
-        const item = requestQueue.shift();
-        activeRequests++;
-
-        Promise.resolve()
-          .then(item.task)
-          .then(item.resolve)
-          .catch(item.reject)
-          .finally(() => {
-            activeRequests--;
-            pumpRequestQueue();
-          });
-      }
-    }
-
-    async function fetchWithCache(url) {
-      const cached = etaCache.get(url);
-
-      if (cached && Date.now() - cached.timestamp < ETA_CACHE_TTL) {
-        return cached.json;
-      }
-
-      const json = await enqueueRequest(() => fetchJson(url));
-
-      etaCache.set(url, {
-        timestamp: Date.now(),
-        json
-      });
-
+  async function fetchKmbStopEta(stopId) {
+    const url = `${getProviderApiBase('kmb')}/stop-eta/${encodeURIComponent(stopId)}`;
+    try {
+      const json = await fetchWithCache(url);
+      markProviderSuccess('KMB');
       return json;
+    } catch (error) {
+      markProviderError('KMB', error);
+      return { data: [] };
+    }
+  }
+
+  async function fetchKmbRouteEta(stopId, route, serviceType = 1) {
+    const safeRoute = encodeURIComponent(route);
+    const safeServiceType = encodeURIComponent(normalizeServiceType(serviceType));
+    const url = `${getProviderApiBase('kmb')}/eta/${encodeURIComponent(stopId)}/${safeRoute}/${safeServiceType}`;
+    try {
+      const json = await fetchWithCache(url);
+      markProviderSuccess('KMB');
+      return json;
+    } catch (error) {
+      markProviderError('KMB', error);
+      return { data: [] };
+    }
+  }
+
+  async function fetchCtbStopEta(stopId) {
+    const safeStop = encodeURIComponent(String(stopId).padStart(6, '0'));
+    const url = `https://rt.data.gov.hk/v1/transport/batch/stop-eta/CTB/${safeStop}?lang=zh-hant`;
+    try {
+      const json = await fetchProviderJson(url, 'CTB');
+      markProviderRefresh('ctb');
+      return json;
+    } catch (error) { return { data: [] }; }
+  }
+
+  async function fetchCtbRouteEta(stopId, route) {
+    const safeStop = encodeURIComponent(String(stopId).padStart(6, '0'));
+    const safeRoute = encodeURIComponent(String(route).toUpperCase());
+    const url = `https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${safeStop}/${safeRoute}`;
+    try {
+      const json = await fetchProviderJson(url, 'CTB');
+      markProviderRefresh('ctb');
+      return json;
+    } catch (error) { return { data: [] }; }
+  }
+
+  function normalizeEtaRemark(remark) {
+    const text = String(remark || '').trim();
+    return text.includes('慢') ? text : '';
+  }
+
+  function normalizeEtaItem(item, fallback = {}) {
+    return {
+      co: item?.co || fallback.co || getProvider(fallback.provider).code,
+      route: String(item?.route ?? fallback.route ?? ''),
+      dir: normalizeDirection(item?.dir ?? fallback.dir),
+      serviceType: normalizeServiceType(item?.service_type ?? fallback.serviceType),
+      seq: parseInt(item?.seq ?? fallback.seq, 10) || 0,
+      stop: item?.stop || fallback.stopId,
+      destination: item?.dest_tc || item?.dest_en || item?.dest || fallback.dest || '未知',
+      eta: item?.eta || '',
+      etaSeq: item?.eta_seq ?? null,
+      remark: item?.rmk_tc || item?.rmk || item?.rmk_en || '',
+      generatedTimestamp: fallback.generatedTimestamp || '',
+      provider: normalizeProvider(item?.co || fallback.provider)
+    };
+  }
+
+  function buildDailyTasks() {
+    const tasks = [];
+    const seen = new Set();
+    savedRoutes.forEach(savedRoute => {
+      const provider = normalizeProvider(savedRoute.provider);
+      const key = [provider, savedRoute.stopId, savedRoute.route, savedRoute.dest].join('|');
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      tasks.push({
+        mode: 'specific',
+        provider,
+        stopId: savedRoute.stopId,
+        route: savedRoute.route,
+        serviceType: normalizeServiceType(savedRoute.serviceType),
+        dir: normalizeDirection(savedRoute.dir),
+        dest: savedRoute.dest
+      });
+    });
+    return tasks;
+  }
+
+  async function fetchEtas() {
+    if (!activeStopIds.length) return;
+
+    const routeMap = {};
+    const now = new Date();
+    const generatedTimestamps = new Set();
+    const searchInput = document.getElementById('nearby-search');
+    const searchQuery = currentMode === 'nearby' && searchInput ? searchInput.value.trim().toUpperCase() : '';
+
+    if (currentMode === 'daily' && savedRoutes.length > 0) {
+      const tasks = buildDailyTasks();
+      const responses = await Promise.all(
+        tasks.map(async task => {
+          try {
+            const json = task.provider === 'ctb'
+              ? await fetchCtbRouteEta(task.stopId, task.route)
+              : await fetchKmbRouteEta(task.stopId, task.route, task.serviceType);
+            return { task, json, items: extractData(json) };
+          } catch (error) { return { task, json: null, items: [] }; }
+        })
+      );
+
+      responses.forEach(({ task, json, items }) => {
+        if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
+        const savedMatches = savedRoutes.filter(saved =>
+          saved.stopId === task.stopId &&
+          normalizeProvider(saved.provider) === task.provider &&
+          String(saved.route).toUpperCase() === String(task.route).toUpperCase() &&
+          normalizeServiceType(saved.serviceType) === task.serviceType
+        );
+
+        items.forEach(rawItem => {
+          const item = normalizeEtaItem(rawItem, {
+            provider: task.provider,
+            stopId: task.stopId,
+            route: task.route,
+            serviceType: task.serviceType,
+            dir: task.dir,
+            dest: task.dest,
+            generatedTimestamp: json?.generated_timestamp || ''
+          });
+
+          if (item.provider !== task.provider) return;
+          if (item.route.toUpperCase() !== String(task.route).toUpperCase()) return;
+          if (task.dir && item.dir && item.dir !== task.dir) return;
+
+          const savedMatch = savedMatches.find(saved => task.provider === 'ctb' ? true : (saved.dir ? saved.dir === item.dir : true));
+          if (!savedMatch) return;
+
+          addEtaRecord(routeMap, item, now);
+        });
+      });
+    } else {
+      const stopTasks = [...new Map(activeStopIds.map(item => [`${normalizeProvider(item.provider)}|${item.stopId}`, item])).values()];
+      const responses = await Promise.all(
+        stopTasks.map(async task => {
+          try {
+            const json = task.provider === 'ctb'
+              ? await fetchCtbStopEta(task.stopId)
+              : await fetchKmbStopEta(task.stopId);
+            return { task, json, items: extractData(json) };
+          } catch (error) { return { task, json: null, items: [] }; }
+        })
+      );
+
+      responses.forEach(({ task, json, items }) => {
+        if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
+        items.forEach(rawItem => {
+          const item = normalizeEtaItem(rawItem, {
+            provider: task.provider,
+            stopId: task.stopId,
+            generatedTimestamp: json?.generated_timestamp || ''
+          });
+
+          if (item.provider !== task.provider) return;
+          if (searchQuery && !item.route.toUpperCase().includes(searchQuery)) return;
+
+          addEtaRecord(routeMap, item, now);
+        });
+      });
     }
 
-    async function fetchKmbStopEta(stopId) {
-      const url = `${getProviderApiBase('kmb')}/stop-eta/${encodeURIComponent(stopId)}`;
+    const groupedList = Object.values(routeMap).map(r => {
+      r.etas.sort((a, b) => a.minutes - b.minutes);
+      return r;
+    });
 
-      try {
-        return await fetchWithCache(url);
-      } catch (error) {
-        return { data: [] };
-      }
-    }
+    renderEtas(groupedList, generatedTimestamps);
+    updateLastUpdated([...new Set(groupedList.map(item => item.provider))]);
+  }
 
-    async function fetchKmbRouteEta(stopId, route, serviceType = 1) {
-      const safeRoute = encodeURIComponent(route);
-      const safeServiceType = encodeURIComponent(normalizeServiceType(serviceType));
-      const url =
-        `${getProviderApiBase('kmb')}/eta/${encodeURIComponent(stopId)}/${safeRoute}/${safeServiceType}`;
+  function addEtaRecord(routeMap, item, now) {
+    if (!item.route || !item.stop) return;
 
-      try {
-        return await fetchWithCache(url);
-      } catch (error) {
-        return { data: [] };
-      }
-    }
+    const stopId = item.stop;
+    const provider = normalizeProvider(item.provider);
+    const stopLabel = getStopName(stopId, provider);
+    const stopInfo = getStopInfo(stopId, provider);
 
-    async function fetchCtbStopEta(stopId) {
-      const safeStop = encodeURIComponent(String(stopId).padStart(6, '0'));
-      const url = `https://rt.data.gov.hk/v1/transport/batch/stop-eta/CTB/${safeStop}?lang=zh-hant`;
-      try {
-        const json = await fetchJson(url);
-        markProviderRefresh('ctb');
-        return json;
-      } catch (error) {
-        return { data: [] };
-      }
-    }
+    const stopDistance = userLocation && stopInfo
+      ? getDistanceKm(userLocation.lat, userLocation.lng, parseFloat(stopInfo.lat), parseFloat(stopInfo.long))
+      : Number.POSITIVE_INFINITY;
 
-    async function fetchCtbRouteEta(stopId, route) {
-      const safeStop = encodeURIComponent(String(stopId).padStart(6, '0'));
-      const safeRoute = encodeURIComponent(String(route).toUpperCase());
-      const url = `https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${safeStop}/${safeRoute}`;
-      try {
-        const json = await fetchJson(url);
-        markProviderRefresh('ctb');
-        return json;
-      } catch (error) {
-        return { data: [] };
-      }
-    }
+    const destination = item.destination;
+    const serviceType = normalizeServiceType(item.serviceType);
+    const dir = normalizeDirection(item.dir);
 
-    // KMB uses "原定班次" / "Scheduled Bus" as a normal status marker.
-    // It is useful in raw API data but is not actionable enough to occupy card space.
-    // Keep other remarks at ETA-record granularity so a remark belongs to the
-    // specific arrival it describes, rather than the whole route card.
-    function normalizeEtaRemark(remark) {
-      const text = String(remark || '').trim();
-      // Only show remarks that contain the Chinese character "慢".
-      // All other remarks, including "原定班次", are hidden.
-      return text.includes('慢') ? text : '';
-    }
+    const key = [provider, stopId, item.route, destination].join('|');
 
-    function normalizeEtaItem(item, fallback = {}) {
-      return {
-        co: item?.co || fallback.co || getProvider(fallback.provider).code,
-        route: String(item?.route ?? fallback.route ?? ''),
-        dir: normalizeDirection(item?.dir ?? fallback.dir),
-        serviceType: normalizeServiceType(item?.service_type ?? fallback.serviceType),
-        seq: parseInt(item?.seq ?? fallback.seq, 10) || 0,
-        stop: item?.stop || fallback.stopId,
-        destination:
-          item?.dest_tc ||
-          item?.dest_en ||
-          item?.dest ||
-          fallback.dest ||
-          '未知',
-        eta: item?.eta || '',
-        etaSeq: item?.eta_seq ?? null,
-        remark: item?.rmk_tc || item?.rmk || item?.rmk_en || '',
-        generatedTimestamp: fallback.generatedTimestamp || '',
-        provider: normalizeProvider(item?.co || fallback.provider)
+    if (!routeMap[key]) {
+      routeMap[key] = {
+        route: item.route,
+        dest: destination,
+        stopId,
+        provider,
+        serviceType,
+        dir,
+        stopName: stopLabel,
+        stopDistance,
+        generatedTimestamp: item.generatedTimestamp || '',
+        etas: []
       };
     }
 
-    function buildDailyTasks() {
-      const tasks = [];
-      const seen = new Set();
+    if (item.eta && String(item.eta).trim() !== '') {
+      const etaTime = new Date(item.eta);
+      const diffMins = Math.round((etaTime - now) / 60000);
 
-      savedRoutes.forEach(savedRoute => {
-        const provider = normalizeProvider(savedRoute.provider);
-        const key = [
-          provider,
-          savedRoute.stopId,
-          savedRoute.route,
-          savedRoute.dest
-        ].join('|');
-
-        if (seen.has(key)) return;
-        seen.add(key);
-
-        tasks.push({
-          mode: 'specific',
-          provider,
-          stopId: savedRoute.stopId,
-          route: savedRoute.route,
-          serviceType: normalizeServiceType(savedRoute.serviceType),
-          dir: normalizeDirection(savedRoute.dir),
-          dest: savedRoute.dest
-        });
-      });
-
-      return tasks;
-    }
-
-    async function fetchEtas() {
-      if (!activeStopIds.length) return;
-
-      const routeMap = {};
-      const now = new Date();
-      const generatedTimestamps = new Set();
-      const searchInput = document.getElementById('nearby-search');
-      const searchQuery =
-        currentMode === 'nearby' && searchInput
-          ? searchInput.value.trim().toUpperCase()
-          : '';
-
-      if (currentMode === 'daily' && savedRoutes.length > 0) {
-        // Daily mode uses the route-specific ETA endpoint.
-        const tasks = buildDailyTasks();
-
-        const responses = await Promise.all(
-          tasks.map(async task => {
-            try {
-              const json = task.provider === 'ctb'
-                ? await fetchCtbRouteEta(task.stopId, task.route)
-                : await fetchKmbRouteEta(
-                    task.stopId,
-                    task.route,
-                    task.serviceType
-                  );
-              return { task, json, items: extractData(json) };
-            } catch (error) {
-              return { task, json: null, items: [] };
-            }
-          })
-        );
-
-        responses.forEach(({ task, json, items }) => {
-          if (json?.generated_timestamp) {
-            generatedTimestamps.add(json.generated_timestamp);
-          }
-
-          const savedMatches = savedRoutes.filter(saved =>
-            saved.stopId === task.stopId &&
-            normalizeProvider(saved.provider) === task.provider &&
-            String(saved.route).toUpperCase() === String(task.route).toUpperCase() &&
-            normalizeServiceType(saved.serviceType) === task.serviceType
-          );
-
-          items.forEach(rawItem => {
-            const item = normalizeEtaItem(rawItem, {
-              provider: task.provider,
-              stopId: task.stopId,
-              route: task.route,
-              serviceType: task.serviceType,
-              dir: task.dir,
-              dest: task.dest,
-              generatedTimestamp: json?.generated_timestamp || ''
-            });
-
-            if (item.provider !== task.provider) return;
-            if (item.route.toUpperCase() !== String(task.route).toUpperCase()) return;
-            if (task.dir && item.dir && item.dir !== task.dir) return;
-
-            const savedMatch = savedMatches.find(saved =>
-              task.provider === 'ctb'
-                ? true
-                : (saved.dir ? saved.dir === item.dir : true)
-            );
-
-            if (!savedMatch) return;
-
-            addEtaRecord(routeMap, item, now);
-          });
-        });
-      } else {
-        // Nearby mode without a route query uses Stop-ETA, which is the
-        // appropriate all-routes endpoint for a physical bus stop.
-        const stopTasks = [...new Map(
-          activeStopIds.map(item => [
-            `${normalizeProvider(item.provider)}|${item.stopId}`,
-            item
-          ])
-        ).values()];
-
-        const responses = await Promise.all(
-          stopTasks.map(async task => {
-            try {
-              const json = task.provider === 'ctb'
-                ? await fetchCtbStopEta(task.stopId)
-                : await fetchKmbStopEta(task.stopId);
-              return { task, json, items: extractData(json) };
-            } catch (error) {
-              return { task, json: null, items: [] };
-            }
-          })
-        );
-
-        responses.forEach(({ task, json, items }) => {
-          if (json?.generated_timestamp) {
-            generatedTimestamps.add(json.generated_timestamp);
-          }
-
-          items.forEach(rawItem => {
-            const item = normalizeEtaItem(rawItem, {
-              provider: task.provider,
-              stopId: task.stopId,
-              generatedTimestamp: json?.generated_timestamp || ''
-            });
-
-            if (item.provider !== task.provider) return;
-            if (searchQuery &&
-                !item.route.toUpperCase().includes(searchQuery)) return;
-
-            addEtaRecord(routeMap, item, now);
-          });
+      if (diffMins >= 0 && diffMins <= 180) {
+        routeMap[key].etas.push({
+          minutes: diffMins,
+          timestamp: item.eta,
+          etaSeq: item.etaSeq,
+          remark: normalizeEtaRemark(item.remark)
         });
       }
+    }
+  }
 
-      const groupedList = Object.values(routeMap).map(r => {
-        r.etas.sort((a, b) => a.minutes - b.minutes);
-        return r;
-      });
+  function renderEtas(routes, generatedTimestamps = new Set()) {
+    const container = document.getElementById('eta-container');
+    const searchInput = document.getElementById('nearby-search');
+    const searchQuery = currentMode === 'nearby' && searchInput ? searchInput.value.trim().toUpperCase() : '';
 
-      renderEtas(groupedList, generatedTimestamps);
-      updateLastUpdated(
-        [...new Set(groupedList.map(item => item.provider))]
-      );
+    if (searchQuery) {
+      const hasExactMatch = routes.some(r => r.route.toUpperCase() === searchQuery);
+      routes = hasExactMatch
+        ? routes.filter(r => r.route.toUpperCase() === searchQuery)
+        : routes.filter(r => r.route.toUpperCase().includes(searchQuery));
     }
 
-    function addEtaRecord(routeMap, item, now) {
-      if (!item.route || !item.stop) return;
+    if (routes.length === 0) {
+      container.innerHTML = `<div class="status-msg">${searchQuery ? '沒有符合搜尋條件的巴士。' : '沒有即將到達的巴士。'}</div>`;
+      return;
+    }
 
-      const stopId = item.stop;
-      const provider = normalizeProvider(item.provider);
-      const stopLabel = getStopName(stopId, provider);
-      const stopInfo = getStopInfo(stopId, provider);
+    const stopsMap = new Map();
 
-      const stopDistance = userLocation && stopInfo
-        ? getDistanceKm(
-            userLocation.lat,
-            userLocation.lng,
-            parseFloat(stopInfo.lat),
-            parseFloat(stopInfo.long)
-          )
-        : Number.POSITIVE_INFINITY;
+    routes.forEach(r => {
+      const stopId = r.stopId || 'unknown';
+      const provider = normalizeProvider(r.provider);
+      const stopKey = `${provider}|${stopId}`;
 
-      const destination = item.destination;
-      const serviceType = normalizeServiceType(item.serviceType);
-      const dir = normalizeDirection(item.dir);
-
-      // Route display/grouping identity intentionally remains:
-      // provider + stopId + route + destination only.
-      const key = [
-        provider,
-        stopId,
-        item.route,
-        destination
-      ].join('|');
-
-      if (!routeMap[key]) {
-        routeMap[key] = {
-          route: item.route,
-          dest: destination,
+      if (!stopsMap.has(stopKey)) {
+        stopsMap.set(stopKey, {
           stopId,
           provider,
-          serviceType,
-          dir,
-          stopName: stopLabel,
-          stopDistance,
-          generatedTimestamp: item.generatedTimestamp || '',
-          etas: []
-        };
+          stopName: r.stopName || '站點資料未提供',
+          stopDistance: r.stopDistance,
+          items: []
+        });
+      }
+      stopsMap.get(stopKey).items.push(r);
+    });
+
+    const isExactMatch = routeStr => searchQuery && routeStr.toUpperCase() === searchQuery;
+
+    const sortedStops = [...stopsMap.values()].sort((a, b) => {
+      const distA = Number.isFinite(a.stopDistance) ? a.stopDistance : Infinity;
+      const distB = Number.isFinite(b.stopDistance) ? b.stopDistance : Infinity;
+
+      if (currentMode === 'nearby' && searchQuery) {
+        const exactA = a.items.some(item => isExactMatch(item.route));
+        const exactB = b.items.some(item => isExactMatch(item.route));
+        if (exactA !== exactB) return exactA ? -1 : 1;
       }
 
-      if (item.eta && String(item.eta).trim() !== '') {
-        const etaTime = new Date(item.eta);
-        const diffMins = Math.round((etaTime - now) / 60000);
+      if (distA !== distB) return distA - distB;
 
-        if (diffMins >= 0 && diffMins <= 180) {
-          routeMap[key].etas.push({
-            minutes: diffMins,
-            timestamp: item.eta,
-            etaSeq: item.etaSeq,
-            remark: normalizeEtaRemark(item.remark)
-          });
-        }
-      }
-    }
-
-    function renderEtas(routes, generatedTimestamps = new Set()) {
-      const container = document.getElementById('eta-container');
-      const searchInput = document.getElementById('nearby-search');
-
-      const searchQuery =
-        currentMode === 'nearby' && searchInput
-          ? searchInput.value.trim().toUpperCase()
-          : '';
-
-      if (searchQuery) {
-        const hasExactMatch = routes.some(
-          r => r.route.toUpperCase() === searchQuery
-        );
-
-        routes = hasExactMatch
-          ? routes.filter(r => r.route.toUpperCase() === searchQuery)
-          : routes.filter(r => r.route.toUpperCase().includes(searchQuery));
+      if (currentMode === 'daily') {
+        const indexA = savedRoutes.findIndex(item => item.stopId === a.stopId);
+        const indexB = savedRoutes.findIndex(item => item.stopId === b.stopId);
+        return (indexA !== -1 ? indexA : 999) - (indexB !== -1 ? indexB : 999);
       }
 
-      if (routes.length === 0) {
-        container.innerHTML =
-          `<div class="status-msg">${searchQuery ? '沒有符合搜尋條件的巴士。' : '沒有即將到達的巴士。'}</div>`;
-        return;
-      }
+      return a.stopName.localeCompare(b.stopName, 'zh-HK');
+    });
 
-      const stopsMap = new Map();
+    container.innerHTML = sortedStops.map(({ stopId, stopName, stopDistance, items }) => {
+      const stopDistanceText = Number.isFinite(stopDistance) ? `${Math.round(stopDistance * 1000)}m` : '站點';
 
-      routes.forEach(r => {
-        const stopId = r.stopId || 'unknown';
-        const provider = normalizeProvider(r.provider);
-        // Stop IDs are provider-scoped. CTB and KMB can legitimately use
-        // the same-looking ID, so grouping by stopId alone can merge unrelated stops.
-        const stopKey = `${provider}|${stopId}`;
-
-        if (!stopsMap.has(stopKey)) {
-          stopsMap.set(stopKey, {
-            stopId,
-            provider,
-            stopName: r.stopName || '站點資料未提供',
-            stopDistance: r.stopDistance,
-            items: []
-          });
-        }
-
-        stopsMap.get(stopKey).items.push(r);
-      });
-
-      const isExactMatch = routeStr =>
-        searchQuery && routeStr.toUpperCase() === searchQuery;
-
-      const sortedStops = [...stopsMap.values()].sort((a, b) => {
-        const distA = Number.isFinite(a.stopDistance) ? a.stopDistance : Infinity;
-        const distB = Number.isFinite(b.stopDistance) ? b.stopDistance : Infinity;
-
+      items.sort((a, b) => {
         if (currentMode === 'nearby' && searchQuery) {
-          const exactA = a.items.some(item => isExactMatch(item.route));
-          const exactB = b.items.some(item => isExactMatch(item.route));
-
+          const exactA = isExactMatch(a.route);
+          const exactB = isExactMatch(b.route);
           if (exactA !== exactB) return exactA ? -1 : 1;
         }
 
-        if (distA !== distB) return distA - distB;
-
-        if (currentMode === 'daily') {
-          const indexA = savedRoutes.findIndex(item => item.stopId === a.stopId);
-          const indexB = savedRoutes.findIndex(item => item.stopId === b.stopId);
-          return (indexA !== -1 ? indexA : 999) -
-                 (indexB !== -1 ? indexB : 999);
-        }
-
-        return a.stopName.localeCompare(b.stopName, 'zh-HK');
+        const etaA = a.etas[0]?.minutes ?? 9999;
+        const etaB = b.etas[0]?.minutes ?? 9999;
+        if (etaA !== etaB) return etaA - etaB;
+        return a.route.localeCompare(b.route, undefined, { numeric: true, sensitivity: 'base' });
       });
 
-      container.innerHTML = sortedStops.map(
-        ({ stopId, stopName, stopDistance, items }) => {
-          const stopDistanceText = Number.isFinite(stopDistance)
-            ? `${Math.round(stopDistance * 1000)}m`
-            : '站點';
+      const cardMarkup = items.map(r => {
+        const firstEta = r.etas[0]?.minutes;
+        const nextEtas = r.etas.slice(1, 3).map(eta => `${eta.minutes}分`).reverse().join(' | ');
 
-          items.sort((a, b) => {
-            if (currentMode === 'nearby' && searchQuery) {
-              const exactA = isExactMatch(a.route);
-              const exactB = isExactMatch(b.route);
-              if (exactA !== exactB) return exactA ? -1 : 1;
-            }
+        const primaryEtaRemark = normalizeEtaRemark(r.etas[0]?.remark);
+        const secondaryRemarks = r.etas.slice(1, 3)
+          .map((eta, index) => ({ label: eta.minutes, remark: normalizeEtaRemark(eta.remark), ordinal: index + 2 }))
+          .filter(item => item.remark);
 
-            const etaA = a.etas[0]?.minutes ?? 9999;
-            const etaB = b.etas[0]?.minutes ?? 9999;
+        let timeClass = 'safe';
+        let displayTime = firstEta != null ? `${firstEta}<span class="unit">分</span>` : '暫無';
 
-            if (etaA !== etaB) return etaA - etaB;
-
-            return a.route.localeCompare(
-              b.route,
-              undefined,
-              { numeric: true, sensitivity: 'base' }
-            );
-          });
-
-          const cardMarkup = items.map(r => {
-            const firstEta = r.etas[0]?.minutes;
-            const nextEtas = r.etas
-              .slice(1, 3)
-              .map(eta => `${eta.minutes}分`)
-              .reverse()
-              .join(' | ');
-
-            const primaryEtaRemark = normalizeEtaRemark(r.etas[0]?.remark);
-            const secondaryRemarks = r.etas
-              .slice(1, 3)
-              .map((eta, index) => ({
-                label: eta.minutes,
-                remark: normalizeEtaRemark(eta.remark),
-                ordinal: index + 2
-              }))
-              .filter(item => item.remark);
-
-            let timeClass = 'safe';
-            let displayTime = firstEta != null
-              ? `${firstEta}<span class="unit">分</span>`
-              : '暫無';
-
-            if (firstEta == null) {
-              timeClass = 'muted';
-            } else if (firstEta === 0) {
-              timeClass = 'due';
-              displayTime = '到站';
-            } else if (firstEta <= 3) {
-              timeClass = 'urgent';
-            } else if (firstEta <= 7) {
-              timeClass = 'warning';
-            }
-
-            const provider = r.provider || 'kmb';
-            const isSaved = isSavedRoute(
-              r.route,
-              r.dest,
-              stopId,
-              provider,
-              r.serviceType,
-              r.dir
-            );
-
-            const action = isSaved
-              ? 'remove-saved-route'
-              : 'save-route';
-
-            const starIcon = isSaved ? '★' : '☆';
-            const savedClass = isSaved ? 'saved' : '';
-            const key = getSavedRouteKey(
-              r.route,
-              r.dest,
-              stopId,
-              provider,
-              r.serviceType,
-              r.dir
-            );
-
-            // Direction and sequence remain internal API metadata only.
-            // They are deliberately not shown on the card.
-            const remarkMarkup = primaryEtaRemark
-              ? `<div class="eta-remark" title="${escapeHtml(primaryEtaRemark)}">${escapeHtml(primaryEtaRemark)}</div>`
-              : '';
-
-            const secondaryRemarkMarkup = secondaryRemarks.length
-              ? `<div class="eta-secondary-remark" title="${escapeHtml(secondaryRemarks.map(x => `${x.label}分：${x.remark}`).join('；'))}">${escapeHtml(secondaryRemarks.map(x => `${x.label}分：${x.remark}`).join('；'))}</div>`
-              : '';
-
-            return `
-              <div class="eta-card">
-                <div class="route-info">
-                  <div class="route-badge"
-                       style="background:${getCompanyColours(provider)};"
-                       title="${escapeHtml(getProvider(provider).label)}">
-                    ${escapeHtml(r.route)}
-                  </div>
-                  <div class="destination-wrap">
-                    <div class="destination">${escapeHtml(r.dest)}</div>
-                  </div>
-                </div>
-
-                <div class="eta-times">
-                  <div class="eta-time-stack">
-                    ${nextEtas
-                      ? `<div class="eta-secondary">${nextEtas}</div>`
-                      : ''}
-                    <div class="eta-primary ${timeClass}">
-                      ${displayTime}
-                    </div>
-                    ${secondaryRemarkMarkup}
-                  </div>
-                  <button
-                    class="save-route-btn ${savedClass}"
-                    data-action="${action}"
-                    data-key="${escapeHtml(key)}"
-                    data-route="${escapeHtml(r.route)}"
-                    data-dest="${escapeHtml(r.dest)}"
-                    data-stop="${escapeHtml(stopId)}"
-                    data-provider="${escapeHtml(provider)}"
-                    data-service-type="${escapeHtml(r.serviceType)}"
-                    data-dir="${escapeHtml(r.dir)}"
-                    title="${isSaved ? '取消儲存' : '儲存路線'}">
-                    ${starIcon}
-                  </button>
-                </div>
-
-                ${remarkMarkup}
-              </div>
-            `;
-          }).join('');
-
-          const timestampText = [...generatedTimestamps][0]
-            ? `資料 ${formatDataAge([...generatedTimestamps][0])}`
-            : '';
-
-          return `
-            <div class="stop-group">
-              <div class="stop-header">
-                <div class="stop-header-title">${escapeHtml(stopName)}</div>
-                <div class="stop-header-distance">
-                  ${escapeHtml(stopDistanceText)}
-                  ${timestampText
-                    ? ` · ${escapeHtml(timestampText)}`
-                    : ''}
-                </div>
-              </div>
-              <div class="stop-card-list">${cardMarkup}</div>
-            </div>
-          `;
+        if (firstEta == null) {
+          timeClass = 'muted';
+        } else if (firstEta === 0) {
+          timeClass = 'due';
+          displayTime = '到站';
+        } else if (firstEta <= 3) {
+          timeClass = 'urgent';
+        } else if (firstEta <= 7) {
+          timeClass = 'warning';
         }
-      ).join('');
-    }
 
-    function showError(msg) {
-      document.getElementById('eta-container').innerHTML =
-        `<div class="status-msg">${escapeHtml(msg)}</div>`;
-      updateMetaText('錯誤');
-    }
+        const provider = r.provider || 'kmb';
+        const isSaved = isSavedRoute(r.route, r.dest, stopId, provider, r.serviceType, r.dir);
 
-    // Pause network polling while the tab is hidden.
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) {
-        stopEtaLoop();
-      } else if (activeStopIds.length && currentMode !== 'ctb-debug') {
-        startEtaLoop();
-      }
-    });
+        const action = isSaved ? 'remove-saved-route' : 'save-route';
+        const starIcon = isSaved ? '★' : '☆';
+        const savedClass = isSaved ? 'saved' : '';
+        const key = getSavedRouteKey(r.route, r.dest, stopId, provider, r.serviceType, r.dir);
 
-    updateSearchVisibility();
-    initDashboard();
-  </script>
+        const remarkMarkup = primaryEtaRemark
+          ? `<div class="eta-remark" title="${escapeHtml(primaryEtaRemark)}">${escapeHtml(primaryEtaRemark)}</div>`
+          : '';
+
+        const secondaryRemarkMarkup = secondaryRemarks.length
+          ? `<div class="eta-secondary-remark" title="${escapeHtml(secondaryRemarks.map(x => `${x.label}分：${x.remark}`).join('；'))}">${escapeHtml(secondaryRemarks.map(x => `${x.label}分：${x.remark}`).join('；'))}</div>`
+          : '';
+
+        return `
+          <div class="eta-card">
+            <div class="route-info">
+              <div class="route-badge" style="background:${getCompanyColours(provider)};" title="${escapeHtml(getProvider(provider).label)}">
+                ${escapeHtml(r.route)}
+              </div>
+              <div class="destination-wrap">
+                <div class="destination">${escapeHtml(r.dest)}</div>
+              </div>
+            </div>
+
+            <div class="eta-times">
+              <div class="eta-time-stack">
+                ${nextEtas ? `<div class="eta-secondary">${nextEtas}</div>` : ''}
+                <div class="eta-primary ${timeClass}">${displayTime}</div>
+                ${secondaryRemarkMarkup}
+              </div>
+              <button
+                class="save-route-btn ${savedClass}"
+                data-action="${action}"
+                data-key="${escapeHtml(key)}"
+                data-route="${escapeHtml(r.route)}"
+                data-dest="${escapeHtml(r.dest)}"
+                data-stop="${escapeHtml(stopId)}"
+                data-provider="${escapeHtml(provider)}"
+                data-service-type="${escapeHtml(r.serviceType)}"
+                data-dir="${escapeHtml(r.dir)}"
+                title="${isSaved ? '取消儲存' : '儲存路線'}">
+                ${starIcon}
+              </button>
+            </div>
+            ${remarkMarkup}
+          </div>
+        `;
+      }).join('');
+
+      const timestampText = [...generatedTimestamps][0] ? `資料 ${formatDataAge([...generatedTimestamps][0])}` : '';
+
+      return `
+        <div class="stop-group">
+          <div class="stop-header">
+            <div class="stop-header-title">${escapeHtml(stopName)}</div>
+            <div class="stop-header-distance">
+              ${escapeHtml(stopDistanceText)}
+              ${timestampText ? ` · ${escapeHtml(timestampText)}` : ''}
+            </div>
+          </div>
+          <div class="stop-card-list">${cardMarkup}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopEtaLoop();
+    else if (activeStopIds.length) startEtaLoop();
+  });
+
+  updateSearchVisibility();
+  initDashboard();
+</script>
 </body>
 </html>
