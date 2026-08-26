@@ -912,10 +912,10 @@
       currentTemp = Number.isFinite(Number(matchedTemp)) ? `${matchedTemp}°C` : '';
 
       const humidityVal = rhr?.humidity?.data?.[0]?.value;
-      currentHumidity = humidityVal ? `相對濕度 ${humidityVal}%` : '';
+      currentHumidity = humidityVal ? ` ${humidityVal}%` : '';
       
       const todayForecast = fnd?.weatherForecast?.[0];
-      currentPsr = todayForecast?.psr ? `降雨概率 ${todayForecast.psr}` : '';
+      currentPsr = todayForecast?.PSR ? `降雨概率 ${todayForecast.psr}` : '';
 
       const locationLabel = currentMode === 'daily' 
         ? '已儲存站點' 
