@@ -205,6 +205,11 @@
       min-height: 52px;
       max-height: 52px;
       flex-shrink: 0;
+      flex-wrap: nowrap;
+    }
+
+    .stop-group.single-item-group .eta-card {
+      border-bottom: none;
     }
 
     .eta-card:last-child {
@@ -231,12 +236,31 @@
       flex-shrink: 0;
     }
 
+    .destination-group {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-width: 0;
+      flex: 1;
+    }
+
     .destination {
       font-size: 1rem;
       font-weight: 600;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      line-height: 1.1;
+    }
+
+    .stop-subtext {
+      font-size: 0.72rem;
+      color: var(--subtext);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      line-height: 1.1;
+      margin-top: 2px;
     }
 
     .eta-times {
@@ -244,6 +268,7 @@
       align-items: center;
       gap: 12px;
       text-align: right;
+      flex-shrink: 0;
     }
 
     .eta-primary {
@@ -876,7 +901,7 @@
       container.innerHTML = sortedStops.map(({ stopId, stopName, stopDistance, items }) => {
         const stopDistanceText = Number.isFinite(stopDistance)
           ? `${Math.round(stopDistance * 1000)}m`
-          : '站點';
+          : '';
 
         items.sort((a, b) => {
           const etaA = (a.etas && a.etas.length > 0) ? a.etas[0] : Infinity;
@@ -884,9 +909,8 @@
           return etaA - etaB;
         });
 
-        const cardMarkup = items.map(r => {
+        const buildCardHtml = (r, showSubtext = false) => {
           const firstEta = r.etas[0];
-          // Reverse secondary ETAs so Left = later (3rd ETA), Middle = next (2nd ETA)
           const nextEtas = r.etas.slice(1, 3).reverse().join(' | ');
 
           let timeClass = 'safe';
@@ -910,11 +934,16 @@
           const starIcon = isSaved ? '★' : '☆';
           const savedClass = isSaved ? 'saved' : '';
 
+          const locationTag = [stopName, stopDistanceText].filter(Boolean).join(' • ');
+
           return `
             <div class="eta-card">
               <div class="route-info">
                 <div class="route-badge" style="background: ${getCompanyColours(provider)};">${r.route}</div>
-                <div class="destination">${r.dest}</div>
+                <div class="destination-group">
+                  <div class="destination">${r.dest}</div>
+                  ${showSubtext && locationTag ? `<div class="stop-subtext">${locationTag}</div>` : ''}
+                </div>
               </div>
               <div class="eta-times">
                 ${nextEtas ? `<div class="eta-secondary">${nextEtas}</div>` : ''}
@@ -923,7 +952,17 @@
               </div>
             </div>
           `;
-        }).join('');
+        };
+
+        if (items.length === 1) {
+          return `
+            <div class="stop-group single-item-group">
+              ${buildCardHtml(items[0], true)}
+            </div>
+          `;
+        }
+
+        const cardMarkup = items.map(r => buildCardHtml(r, false)).join('');
 
         return `
           <div class="stop-group">
