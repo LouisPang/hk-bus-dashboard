@@ -58,6 +58,29 @@
       font-size: 1.05rem;
       color: var(--subtext);
       margin-top: 4px;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .weather-icon {
+      width: 24px;
+      height: 24px;
+      vertical-align: middle;
+      display: inline-block;
+    }
+
+    .badge-warning {
+      background: var(--urgent);
+      color: #ffffff;
+      font-size: 0.75rem;
+      font-weight: 800;
+      padding: 2px 6px;
+      border-radius: 4px;
+      display: inline-block;
+      vertical-align: middle;
+      animation: pulse 1.5s infinite;
     }
 
     #clock {
@@ -322,7 +345,7 @@
   <header>
     <div class="title-group">
       <h1>即時巴士 ETA</h1>
-      <div class="meta-info" id="meta-text">定位中 • 正在載入天氣...</div>
+      <div class="meta-info" id="meta-text">載入天氣中...</div>
     </div>
     <div id="clock">00:00</div>
   </header>
@@ -360,10 +383,16 @@
     let userLocation = null;
     let activeStopIds = [];
     let nearbyStopIds = [];
-    let currentTemp = '';
     let currentMode = 'daily';
     let etaPollTimer = null;
     let savedRoutes = [];
+
+    let weatherData = {
+      iconUrl: '',
+      tempStr: '',
+      rainStr: '',
+      warnings: []
+    };
 
     function debounce(func, delay = 300) {
       let timer;
@@ -415,7 +444,7 @@
             return routeDb;
           }
         }
-      } catch (e) { /* ignore cache read error */ }
+      } catch (e) { /* ignore */ }
 
       try {
         const res = await fetch(`${getProviderApiBase('kmb')}/route-stop`);
@@ -496,22 +525,103 @@
 
     async function fetchWeather() {
       try {
-        const res = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=tc');
-        const data = await res.json();
-        currentTemp = `${data.temperature.data[0].value}°C`;
-      } catch (e) {
-        currentTemp = '';
-      }
+        const [rhrRes, fndRes, warnRes] = await Promise.allSettled([
+          fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=tc'),
+          fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=fnd&lang=tc'),
+          fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=warnsum&lang=tc')
+        ]);
+
+        let iconId = null;
+        let currTemp = null;
+        let minTemp = null;
+        let maxTemp = null;
+        let psrText = '';
+        let warningBadges = [];
+
+        if (rhrRes.status === 'fulfilled' && rhrRes.value.ok) {
+          const rhr = await rhrRes.value.json();
+          if (rhr.icon && rhr.icon.length > 0) iconId = rhr.icon[0];
+          if (rhr.temperature && rhr.temperature.data && rhr.temperature.data.length > 0) {
+            currTemp = rhr.temperature.data[0].value;
+          }
+        }
+
+        if (fndRes.status === 'fulfilled' && fndRes.value.ok) {
+          const fnd = await fndRes.value.json();
+          if (fnd.forecastWeather && fnd.forecastWeather.length > 0) {
+            const today = fnd.forecastWeather[0];
+            minTemp = today.forecastMintemp?.value;
+            maxTemp = today.forecastMaxtemp?.value;
+            if (today.PSR) {
+              psrText = `降雨機率: ${today.PSR}`;
+            }
+          }
+        }
+
+        if (warnRes.status === 'fulfilled' && warnRes.value.ok) {
+          const warn = await warnRes.value.json();
+          if (warn.WTTC) {
+            const code = warn.WTTC.code;
+            if (code === 'TC1') warningBadges.push('1號風球');
+            else if (code === 'TC3') warningBadges.push('3號風球');
+            else if (code?.startsWith('TC8')) warningBadges.push('8號風球');
+            else if (code === 'TC9') warningBadges.push('9號風球');
+            else if (code === 'TC10') warningBadges.push('10號風球');
+          }
+          if (warn.WRAIN) {
+            const code = warn.WRAIN.code;
+            if (code === 'WRAINY') warningBadges.push('黃雨');
+            else if (code === 'WRAINR') warningBadges.push('紅雨');
+            else if (code === 'WRAINB') warningBadges.push('黑雨');
+          }
+          if (warn.WHOT) warningBadges.push('酷熱');
+          if (warn.WCOLD) warningBadges.push('寒冷');
+          if (warn.WFIR) warningBadges.push('火災危險');
+          if (warn.WTS) warningBadges.push('雷暴');
+        }
+
+        weatherData.iconUrl = iconId ? `https://www.hko.gov.hk/images/HKO_images/uc/icon60/pic${iconId}.png` : '';
+        weatherData.tempStr = currTemp !== null ? `${currTemp}°C${(minTemp && maxTemp) ? ` (${minTemp}°-${maxTemp}°)` : ''}` : '';
+        weatherData.rainStr = psrText;
+        weatherData.warnings = warningBadges;
+
+      } catch (e) { /* ignore weather errors */ }
       updateMetaText();
     }
     fetchWeather();
     setInterval(fetchWeather, 600000);
 
     function updateMetaText(statusMsg = '') {
-      const parts = ['香港'];
-      if (currentTemp) parts.push(currentTemp);
-      if (statusMsg) parts.push(statusMsg);
-      document.getElementById('meta-text').textContent = parts.join(' • ');
+      const container = document.getElementById('meta-text');
+      if (!container) return;
+
+      const elements = [];
+
+      if (weatherData.iconUrl || weatherData.tempStr) {
+        let tempHtml = '';
+        if (weatherData.iconUrl) {
+          tempHtml += `<img src="${weatherData.iconUrl}" class="weather-icon" alt="weather" /> `;
+        }
+        if (weatherData.tempStr) {
+          tempHtml += weatherData.tempStr;
+        }
+        elements.push(tempHtml);
+      }
+
+      if (weatherData.rainStr) {
+        elements.push(weatherData.rainStr);
+      }
+
+      if (weatherData.warnings && weatherData.warnings.length > 0) {
+        const badgeHtml = weatherData.warnings.map(w => `<span class="badge-warning">${w}</span>`).join(' ');
+        elements.push(badgeHtml);
+      }
+
+      if (statusMsg) {
+        elements.push(statusMsg);
+      }
+
+      container.innerHTML = elements.join(' • ');
     }
 
     function getDistanceKm(lat1, lon1, lat2, lon2) {
@@ -640,7 +750,7 @@
             fetchEtas();
           }
         },
-        (err) => { /* fallback to distance Infinity */ },
+        (err) => { /* fallback */ },
         { enableHighAccuracy: true, timeout: 10000 }
       );
     }
@@ -808,163 +918,143 @@
           stopLabel = `站點 (${stopId})`;
         }
 
-        const stopInfo = allStops.find(stop => stop && stop.stop === stopId);
-        const stopDistance = userLocation && stopInfo
-          ? getDistanceKm(userLocation.lat, userLocation.lng, parseFloat(stopInfo.lat), parseFloat(stopInfo.long))
-          : Number.POSITIVE_INFINITY;
+        const stopInfo = allStops.find(s => s.stop === stopId) || {};
+        let distanceText = '';
+        if (userLocation && stopInfo.lat && stopInfo.long) {
+          const distKm = getDistanceKm(userLocation.lat, userLocation.lng, parseFloat(stopInfo.lat), parseFloat(stopInfo.long));
+          distanceText = `${Math.round(distKm * 1000)}m`;
+        }
 
-        items.forEach(item => {
-          if (!item || !item.route) return;
+        (items || []).forEach(item => {
+          if (!item.eta) return;
 
-          const destination = item.dest_tc || item.dest_en || '未知';
-          const routeKey = getSavedRouteKey(item.route, destination, stopId, provider || 'kmb');
-          const dailySavedRouteKeys = currentMode === 'daily' && savedRoutes.length > 0 ? getSavedRouteKeys() : null;
-          if (dailySavedRouteKeys && !dailySavedRouteKeys.has(routeKey)) return;
-
-          const key = `${provider || 'kmb'}-${stopId}-${item.route}-${destination}`;
+          const route = item.route;
+          const dest = item.dest_tc || item.dest_en || '未知目的地';
+          const serviceType = item.service_type || 1;
+          const key = `${provider}|${stopId}|${route}|${dest}|${serviceType}`;
 
           if (!routeMap[key]) {
             routeMap[key] = {
-              route: item.route,
-              dest: destination,
-              stopId: stopId,
-              provider: provider || 'kmb',
-              stopName: stopLabel,
-              stopDistance: stopDistance,
+              route,
+              dest,
+              stopId,
+              stopLabel,
+              distanceText,
+              provider,
               etas: []
             };
           }
 
-          if (item.eta && item.eta.trim() !== '') {
-            const etaTime = new Date(item.eta);
-            const diffMins = Math.round((etaTime - now) / 60000);
-            if (diffMins >= 0) {
-              routeMap[key].etas.push(diffMins);
-            }
+          const diffMins = Math.floor((new Date(item.eta) - now) / 60000);
+          if (diffMins >= -1 && diffMins < 120) {
+            routeMap[key].etas.push({
+              time: diffMins,
+              rawTime: item.eta.substring(11, 16),
+              rmk: item.rmk_tc || item.rmk_en || ''
+            });
           }
         });
       });
 
-      const groupedList = Object.values(routeMap).map(r => {
-        r.etas.sort((a, b) => a - b);
-        return r;
-      });
-
-      renderEtas(groupedList);
+      renderDashboard(Object.values(routeMap));
       updateLastUpdated('kmb');
     }
 
-    function renderEtas(routes) {
+    function renderDashboard(cards) {
       const container = document.getElementById('eta-container');
-      const searchInput = document.getElementById('nearby-search');
-      const searchQuery = (currentMode === 'nearby' && searchInput)
-        ? searchInput.value.trim().toUpperCase()
-        : '';
 
-      // Filter for search: If exact match exists, show ONLY exact match route
-      if (searchQuery) {
-        const hasExactMatch = routes.some(r => r.route.toUpperCase() === searchQuery);
-        if (hasExactMatch) {
-          routes = routes.filter(r => r.route.toUpperCase() === searchQuery);
-        } else {
-          routes = routes.filter(r => r.route.toUpperCase().includes(searchQuery));
-        }
-      }
-
-      if (routes.length === 0) {
-        container.innerHTML = `<div class="status-msg">${searchQuery ? '沒有符合搜尋條件的巴士。' : '沒有即將到達的巴士。'}</div>`;
+      if (!cards || cards.length === 0) {
+        container.innerHTML = `<div class="status-msg">${
+          currentMode === 'daily'
+            ? '尚未新增預設路線。<br><br>請先使用「附近即時」選擇站點。'
+            : '找不到預計到達時間資料。'
+        }</div>`;
         return;
       }
 
-      const stopsMap = new Map();
-      routes.forEach(r => {
-        const stopId = r.stopId || 'unknown';
-        if (!stopsMap.has(stopId)) {
-          stopsMap.set(stopId, {
-            stopId,
-            stopName: r.stopName || '站點資料未提供',
-            stopDistance: r.stopDistance,
-            items: []
-          });
-        }
-        stopsMap.get(stopId).items.push(r);
+      if (currentMode === 'daily') {
+        const savedKeySet = getSavedRouteKeys();
+        cards = cards.filter(c => savedKeySet.has(getSavedRouteKey(c.route, c.dest, c.stopId, c.provider || 'kmb')));
+      }
+
+      cards.forEach(card => card.etas.sort((a, b) => a.time - b.time));
+
+      cards.sort((a, b) => {
+        const minA = a.etas[0] ? a.etas[0].time : 999;
+        const minB = b.etas[0] ? b.etas[0].time : 999;
+        if (minA !== minB) return minA - minB;
+        return a.route.localeCompare(b.route, undefined, { numeric: true });
       });
 
-      const isExactMatch = (routeStr) => searchQuery && routeStr.toUpperCase() === searchQuery;
-
-      const sortedStops = [...stopsMap.values()].sort((a, b) => {
-        const distA = Number.isFinite(a.stopDistance) ? a.stopDistance : Infinity;
-        const distB = Number.isFinite(b.stopDistance) ? b.stopDistance : Infinity;
-
-        if (currentMode === 'daily') {
-          if (distA !== distB) return distA - distB;
-
-          const indexA = savedRoutes.findIndex(item => item.stopId === a.stopId);
-          const indexB = savedRoutes.findIndex(item => item.stopId === b.stopId);
-          return (indexA !== -1 ? indexA : 999) - (indexB !== -1 ? indexB : 999);
-        } else {
-          if (searchQuery) {
-            const hasExactA = a.items.some(item => isExactMatch(item.route));
-            const hasExactB = b.items.some(item => isExactMatch(item.route));
-            if (hasExactA !== hasExactB) return hasExactA ? -1 : 1;
-          }
-
-          if (distA !== distB) return distA - distB;
-
-          return a.stopName.localeCompare(b.stopName, 'zh-HK');
+      const groups = {};
+      cards.forEach(card => {
+        const groupKey = `${card.provider || 'kmb'}_${card.stopId}`;
+        if (!groups[groupKey]) {
+          groups[groupKey] = {
+            stopId: card.stopId,
+            stopLabel: card.stopLabel,
+            distanceText: card.distanceText,
+            provider: card.provider || 'kmb',
+            cards: []
+          };
         }
+        groups[groupKey].cards.push(card);
       });
 
-      container.innerHTML = sortedStops.map(({ stopId, stopName, stopDistance, items }) => {
-        const stopDistanceText = Number.isFinite(stopDistance)
-          ? `${Math.round(stopDistance * 1000)}m`
-          : '站點';
+      const groupList = Object.values(groups);
 
-        items.sort((a, b) => {
-          if (currentMode === 'nearby' && searchQuery) {
-            const exactA = isExactMatch(a.route);
-            const exactB = isExactMatch(b.route);
-            if (exactA !== exactB) return exactA ? -1 : 1;
+      container.innerHTML = groupList.map(group => {
+        const cardsHtml = group.cards.map(card => {
+          const nextEta = card.etas[0];
+          const secondEta = card.etas[1];
+          const thirdEta = card.etas[2];
+
+          let primaryClass = 'safe';
+          let primaryDisplay = '已到達';
+
+          if (nextEta) {
+            if (nextEta.time <= 0) {
+              primaryClass = 'due';
+              primaryDisplay = '即將到達';
+            } else if (nextEta.time <= 3) {
+              primaryClass = 'urgent';
+              primaryDisplay = `${nextEta.time}<span class="unit">分鐘</span>`;
+            } else if (nextEta.time <= 7) {
+              primaryClass = 'warning';
+              primaryDisplay = `${nextEta.time}<span class="unit">分鐘</span>`;
+            } else {
+              primaryDisplay = `${nextEta.time}<span class="unit">分鐘</span>`;
+            }
           }
 
-          return a.route.localeCompare(b.route, undefined, { numeric: true, sensitivity: 'base' });
-        });
+          let secondaryText = '';
+          const formatEtaText = (eta) => eta ? (eta.time <= 0 ? '即將到達' : `${eta.time}分鐘`) : null;
+          const secondText = formatEtaText(secondEta);
+          const thirdText = formatEtaText(thirdEta);
 
-        const cardMarkup = items.map(r => {
-          const firstEta = r.etas[0];
-          const nextEtas = r.etas.slice(1, 3).reverse().join(' | ');
-
-          let timeClass = 'safe';
-          let displayTime = `${firstEta}<span class="unit">分</span>`;
-
-          if (r.etas.length === 0) {
-            timeClass = 'muted';
-            displayTime = '暫無';
-          } else if (firstEta === 0) {
-            timeClass = 'due';
-            displayTime = '到站';
-          } else if (firstEta <= 3) {
-            timeClass = 'urgent';
-          } else if (firstEta <= 7) {
-            timeClass = 'warning';
+          if (secondText && thirdText) {
+            secondaryText = `${secondText}, ${thirdText}`;
+          } else if (secondText) {
+            secondaryText = secondText;
           }
 
-          const provider = r.provider || 'kmb';
-          const isSaved = isSavedRoute(r.route, r.dest, stopId, provider);
-          const action = isSaved ? 'remove-saved-route' : 'save-route';
-          const starIcon = isSaved ? '★' : '☆';
-          const savedClass = isSaved ? 'saved' : '';
+          const saved = isSavedRoute(card.route, card.dest, card.stopId, card.provider || 'kmb');
+          const saveIcon = saved ? '★' : '☆';
+          const saveAction = saved ? 'remove-saved-route' : 'save-route';
+          const savedClass = saved ? 'saved' : '';
+
+          const badgeBg = getCompanyColours([card.provider || 'kmb']);
 
           return `
             <div class="eta-card">
               <div class="route-info">
-                <div class="route-badge" style="background: ${getCompanyColours(provider)};">${r.route}</div>
-                <div class="destination">${r.dest}</div>
+                <button class="save-route-btn ${savedClass}" data-action="${saveAction}" data-route="${card.route}" data-dest="${card.dest}" data-stop="${card.stopId}" data-provider="${card.provider || 'kmb'}">${saveIcon}</button>
+                <div class="route-badge" style="background: ${badgeBg};">${card.route}</div>
+                <div class="destination">往 ${card.dest}</div>
               </div>
               <div class="eta-times">
-                ${nextEtas ? `<div class="eta-secondary">${nextEtas}</div>` : ''}
-                <div class="eta-primary ${timeClass}">${displayTime}</div>
-                <button class="save-route-btn ${savedClass}" data-action="${action}" data-route="${r.route}" data-dest="${r.dest}" data-stop="${stopId}" data-provider="${provider}">${starIcon}</button>
+                <div class="eta-primary ${primaryClass}">${primaryDisplay}</div>
+                ${secondaryText ? `<div class="eta-secondary">${secondaryText}</div>` : ''}
               </div>
             </div>
           `;
@@ -973,10 +1063,12 @@
         return `
           <div class="stop-group">
             <div class="stop-header">
-              <div class="stop-header-title">${stopName}</div>
-              <div class="stop-header-distance">${stopDistanceText}</div>
+              <div class="stop-header-title">${group.stopLabel}</div>
+              ${group.distanceText ? `<div class="stop-header-distance">${group.distanceText}</div>` : ''}
             </div>
-            <div class="stop-card-list">${cardMarkup}</div>
+            <div class="stop-card-list">
+              ${cardsHtml}
+            </div>
           </div>
         `;
       }).join('');
@@ -987,8 +1079,7 @@
       updateMetaText('錯誤');
     }
 
-    updateSearchVisibility();
-    initDashboard();
+    window.onload = initDashboard;
   </script>
 </body>
 </html>
