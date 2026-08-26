@@ -396,7 +396,7 @@
   <header>
     <div class="title-group">
       <h1>即時巴士 ETA</h1>
-      <div class="meta-info" id="meta-text">定位中</div>
+      <div class="meta-info" id="meta-text">定位中...</div>
       <div class="weather-summary" id="weather-summary">☁️ 天氣資料載入中</div>
       <div class="weather-commute" id="weather-commute"><span class="weather-icon">·</span><span id="weather-advice">正在載入通勤建議...</span></div>
       <div class="weather-source" id="weather-source">天文台</div>
@@ -452,7 +452,9 @@
   let latestEtaResults = [];
   let latestGeneratedTimestamps = new Set();
   let currentTemp = '';
-  let weatherState = { summary: '', forecast: '', outlook: '', psr: '', warning: '', updated: null };
+  let currentStation = '';
+  let currentHumidity = '';
+  let currentPsr = '';
   let currentMode = 'nearby';
   let etaPollTimer = null;
   let etaRefreshGeneration = 0;
@@ -461,6 +463,7 @@
   let requestQueue = [];
   let activeRequests = 0;
   let providerRefreshTimestamps = { kmb: null, lwb: null, ctb: null };
+  let cachedHkoStations = null;
 
   const providerLiveStatus = {
     kmb: { state: 'idle', lastSuccess: null, lastAttempt: null, error: '' },
@@ -534,23 +537,18 @@
     return stopMetaMap[key] || null;
   }
 
-  function buildCommuteAdvice(rhr, flw, fnd, warnsum) {
-    let summary = '🌤️ 天氣大致良好';
-    let advice = '適合出行';
-    let psr = 'GOOD';
-    if (warnsum && Object.keys(warnsum).length > 0) {
-      summary = '⚠️ 警告生效中';
-      advice = '請留意天氣警告';
-      psr = 'WARN';
+  function updateMetaText(statusMsg = '') {
+    const parts = [];
+    if (statusMsg) parts.push(statusMsg);
+    if (currentStation) parts.push(currentStation);
+    if (currentTemp) parts.push(currentTemp);
+    if (currentHumidity) parts.push(currentHumidity);
+    if (currentPsr) parts.push(currentPsr);
+    
+    const el = document.getElementById('meta-text');
+    if (el && parts.length > 0) {
+      el.textContent = parts.join(' • ');
     }
-    return { summary, advice, psr };
-  }
-
-  function renderWeatherAdvice(advice) {
-    const summaryEl = document.getElementById('weather-summary');
-    const adviceEl = document.getElementById('weather-advice');
-    if (summaryEl) summaryEl.textContent = advice.summary;
-    if (adviceEl) adviceEl.textContent = advice.advice;
   }
 
   function applyLocation(lat, lng, sourceLabel) {
@@ -838,150 +836,124 @@
 
     try { return await ctbRouteStopLoadPromise; } finally { ctbRouteStopLoadPromise = null; }
   }
-let cachedHkoStations = null;
 
-async function getHkoStationCoordinates() {
-  if (cachedHkoStations) return cachedHkoStations;
-  try {
-    // Dynamically fetch station metadata from HKO GeoJSON/API endpoint
-    const res = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/opendata.php?dataType=CLIMSTAT&lang=tc');
-    const json = await res.json();
-    
-    // Fallback parser if using standard station list endpoint
-    if (Array.isArray(json)) {
-      cachedHkoStations = json.map(stn => ({
-        name: stn.stationNameTC || stn.stationName || stn.name,
-        lat: parseFloat(stn.latitude || stn.lat),
-        lng: parseFloat(stn.longitude || stn.lng || stn.lon)
-      })).filter(s => s.name && Number.isFinite(s.lat) && Number.isFinite(s.lng));
-      return cachedHkoStations;
-    }
-  } catch (e) {
-    console.warn('Failed to dynamically fetch station list, using live RHRREAD payload matching');
-  }
-  return [];
-}
-
-// Calculate distance dynamically between GPS and any station
-function findClosestStationName(userLat, userLng, stationList) {
-  if (!stationList || !stationList.length) return null;
-  
-  let closest = null;
-  let minDistance = Infinity;
-
-  stationList.forEach(stn => {
-    const dist = getDistanceKm(userLat, userLng, stn.lat, stn.lng);
-    if (dist < minDistance) {
-      minDistance = dist;
-      closest = stn.name;
-    }
-  });
-
-  return closest;
-}
-async function fetchWeather() {
-  try {
-    const base = 'https://data.weather.gov.hk/weatherAPI/opendata/weather.php';
-    
-    // Fetch all necessary datasets in parallel (including 9-day forecast for PSR)
-    const [rhr, flw, warnsum, fnd] = await Promise.all([
-      fetchJson(`${base}?dataType=rhrread&lang=tc`),
-      fetchJson(`${base}?dataType=flw&lang=tc`),
-      fetchJson(`${base}?dataType=warnsum&lang=tc`),
-      fetchJson(`${base}?dataType=fnd&lang=tc`)
-    ]);
-
-    // 1. Determine Nearest HKO Station & Temperature
-    let stationName = '京士柏';
-    let matchedTemp = null;
-    const tempDataList = rhr?.temperature?.data || [];
-
-    if (userLocation && tempDataList.length > 0) {
-      const dynamicStations = await getHkoStationCoordinates();
+  async function getHkoStationCoordinates() {
+    if (cachedHkoStations) return cachedHkoStations;
+    try {
+      const res = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/opendata.php?dataType=CLIMSTAT&lang=tc');
+      const json = await res.json();
       
-      if (dynamicStations.length > 0) {
-        const nearest = findClosestStationName(userLocation.lat, userLocation.lng, dynamicStations);
-        const stnData = tempDataList.find(s => s.place === nearest);
-        if (stnData) {
-          stationName = stnData.place;
-          matchedTemp = stnData.value;
-        }
+      if (Array.isArray(json)) {
+        cachedHkoStations = json.map(stn => ({
+          name: stn.stationNameTC || stn.stationName || stn.name,
+          lat: parseFloat(stn.latitude || stn.lat),
+          lng: parseFloat(stn.longitude || stn.lng || stn.lon)
+        })).filter(s => s.name && Number.isFinite(s.lat) && Number.isFinite(s.lng));
+        return cachedHkoStations;
       }
-
-      // Fallback matching if coordinates map fails
-      if (!matchedTemp) {
-        const fallbackStn = tempDataList.find(s => 
-          s.place.includes('九龍') || s.place.includes('京士柏') || s.place.includes('天文台')
-        );
-        stationName = fallbackStn?.place || tempDataList[0]?.place || '京士柏';
-        matchedTemp = fallbackStn?.value ?? tempDataList[0]?.value;
-      }
-    } else if (tempDataList.length > 0) {
-      stationName = tempDataList[0]?.place || '京士柏';
-      matchedTemp = tempDataList[0]?.value;
+    } catch (e) {
+      console.warn('Failed to dynamically fetch station list, using live payload matching fallback');
     }
-
-    currentTemp = Number.isFinite(Number(matchedTemp)) ? `${matchedTemp}°C` : '--°C';
-
-    // 2. Extract Relative Humidity & PSR (Rain Probability)
-    const humidityVal = rhr?.humidity?.data?.[0]?.value;
-    const humidityText = humidityVal ? `相對濕度 ${humidityVal}%` : '';
-    
-    const todayForecast = fnd?.weatherForecast?.[0];
-    const psrText = todayForecast?.psr ? `降雨概率 ${todayForecast.psr}` : '';
-
-    // 3. Update Meta Header Line: [Station] • [Temp] • [Humidity] • [Rain %]
-    const metaParts = [stationName, currentTemp, humidityText, psrText].filter(Boolean);
-    const metaEl = document.getElementById('weather-meta');
-    if (metaEl) {
-      metaEl.textContent = metaParts.join(' • ');
-    }
-
-    // 4. Extract Active Warnings
-    let warningNames = [];
-    if (warnsum && typeof warnsum === 'object') {
-      warningNames = Object.values(warnsum)
-        .map(w => w.name || w.code)
-        .filter(Boolean);
-    }
-
-    // 5. Render Weather Advice & Commute Container
-    const summaryEl = document.getElementById('weather-summary');
-    const adviceEl = document.getElementById('weather-advice');
-    const commuteContainer = document.getElementById('weather-commute');
-
-    if (warningNames.length > 0) {
-      if (summaryEl) summaryEl.textContent = `⚠️ 生效警告：${warningNames.join('、')}`;
-      if (adviceEl) adviceEl.textContent = flw?.generalSituation || '天氣變化不穩定，建議帶備雨具並留意交通狀況。';
-      if (commuteContainer) commuteContainer.className = 'weather-commute alert';
-    } else {
-      const forecastDesc = flw?.forecastDesc || '天氣大致良好';
-      if (summaryEl) summaryEl.textContent = `🌤️ ${forecastDesc.slice(0, 30)}...`;
-      if (adviceEl) adviceEl.textContent = flw?.outlook || '適合出行';
-      if (commuteContainer) commuteContainer.className = 'weather-commute good';
-    }
-
-  } catch (e) {
-    console.error('Weather load error:', e);
-    const summaryEl = document.getElementById('weather-summary');
-    if (summaryEl) summaryEl.textContent = '☁️ 天氣資料暫時未能取得';
+    return [];
   }
-}
+
+  function findClosestStationName(userLat, userLng, stationList) {
+    if (!stationList || !stationList.length) return null;
+    let closest = null;
+    let minDistance = Infinity;
+
+    stationList.forEach(stn => {
+      const dist = getDistanceKm(userLat, userLng, stn.lat, stn.lng);
+      if (dist < minDistance) {
+        minDistance = dist;
+        closest = stn.name;
+      }
+    });
+
+    return closest;
+  }
+
+  async function fetchWeather() {
+    try {
+      const base = 'https://data.weather.gov.hk/weatherAPI/opendata/weather.php';
+      
+      const [rhr, flw, warnsum, fnd] = await Promise.all([
+        fetchJson(`${base}?dataType=rhrread&lang=tc`),
+        fetchJson(`${base}?dataType=flw&lang=tc`),
+        fetchJson(`${base}?dataType=warnsum&lang=tc`),
+        fetchJson(`${base}?dataType=fnd&lang=tc`)
+      ]);
+
+      const tempDataList = rhr?.temperature?.data || [];
+      let matchedTemp = null;
+      currentStation = '';
+
+      if (userLocation && tempDataList.length > 0) {
+        const dynamicStations = await getHkoStationCoordinates();
+        
+        if (dynamicStations.length > 0) {
+          const nearest = findClosestStationName(userLocation.lat, userLocation.lng, dynamicStations);
+          const stnData = tempDataList.find(s => s.place === nearest);
+          if (stnData) {
+            currentStation = stnData.place;
+            matchedTemp = stnData.value;
+          }
+        }
+
+        if (!matchedTemp) {
+          currentStation = tempDataList[0]?.place || '';
+          matchedTemp = tempDataList[0]?.value;
+        }
+      } else if (tempDataList.length > 0) {
+        currentStation = tempDataList[0]?.place || '';
+        matchedTemp = tempDataList[0]?.value;
+      }
+
+      currentTemp = Number.isFinite(Number(matchedTemp)) ? `${matchedTemp}°C` : '';
+
+      const humidityVal = rhr?.humidity?.data?.[0]?.value;
+      currentHumidity = humidityVal ? `相對濕度 ${humidityVal}%` : '';
+      
+      const todayForecast = fnd?.weatherForecast?.[0];
+      currentPsr = todayForecast?.psr ? `降雨概率 ${todayForecast.psr}` : '';
+
+      const locationLabel = currentMode === 'daily' 
+        ? '已儲存站點' 
+        : (locationSource === 'preset-mong-kok' ? '旺角測試位置 (約300m)' : '附近站點 (約300m)');
+      
+      updateMetaText(locationLabel);
+
+      let warningNames = [];
+      if (warnsum && typeof warnsum === 'object') {
+        warningNames = Object.values(warnsum)
+          .map(w => w.name || w.code)
+          .filter(Boolean);
+      }
+
+      const summaryEl = document.getElementById('weather-summary');
+      const adviceEl = document.getElementById('weather-advice');
+      const commuteContainer = document.getElementById('weather-commute');
+
+      if (warningNames.length > 0) {
+        if (summaryEl) summaryEl.textContent = `⚠️ 生效警告：${warningNames.join('、')}`;
+        if (adviceEl) adviceEl.textContent = flw?.generalSituation || '天氣變化不穩定，建議帶備雨具並留意交通狀況。';
+        if (commuteContainer) commuteContainer.className = 'weather-commute alert';
+      } else {
+        const forecastDesc = flw?.forecastDesc || '天氣大致良好';
+        if (summaryEl) summaryEl.textContent = `🌤️ ${forecastDesc.slice(0, 30)}...`;
+        if (adviceEl) adviceEl.textContent = flw?.outlook || '適合出行';
+        if (commuteContainer) commuteContainer.className = 'weather-commute good';
+      }
+
+    } catch (e) {
+      console.error('Weather load error:', e);
+      const summaryEl = document.getElementById('weather-summary');
+      if (summaryEl) summaryEl.textContent = '☁️ 天氣資料暫時未能取得';
+    }
+  }
 
   fetchWeather();
   setInterval(fetchWeather, 600000);
-
-function updateMetaText(stationName = '', statusMsg = '') {
-  const parts = [];
-  if (stationName) parts.push(stationName);
-  if (currentTemp) parts.push(currentTemp);
-  if (statusMsg) parts.push(statusMsg);
-  
-  const el = document.getElementById('meta-text') || document.getElementById('weather-meta');
-  if (el) {
-    el.textContent = parts.join(' • ');
-  }
-}
 
   function updateSearchVisibility() {
     const searchContainer = document.getElementById('toolbar-search');
@@ -1055,7 +1027,6 @@ function updateMetaText(stationName = '', statusMsg = '') {
       responses.forEach(({ stop, json, items }) => {
         if (json?.generated_timestamp) generated.add(json.generated_timestamp);
 
-        // If CTB API returned empty items for searched route, outer join empty entry so stop appears
         if (!items || items.length === 0) {
           ensureStopInMap(routeMap, {
             stopId: stop.stopId,
@@ -1414,14 +1385,13 @@ function updateMetaText(stationName = '', statusMsg = '') {
       return;
     }
 
-    updateMetaText(locationSource === 'preset-mong-kok' ? '旺角測試位置 · 附近站點（約300公尺）' : '附近站點（約300公尺）');
+    updateMetaText(locationSource === 'preset-mong-kok' ? '旺角測試位置 (約300m)' : '附近站點 (約300m)');
     startEtaLoop();
   }
 
   function onLocationError(error) {
     usePresetMongKokLocation(error?.message || 'location unavailable');
     onLocationSuccess({ coords: { latitude: PRESET_TEST_LOCATION.lat, longitude: PRESET_TEST_LOCATION.lng } }, 'preset-mong-kok');
-    updateMetaText('旺角測試位置 · 約300公尺');
   }
 
   function stopEtaLoop() {
@@ -1629,7 +1599,6 @@ function updateMetaText(stationName = '', statusMsg = '') {
       responses.forEach(({ task, json, items }) => {
         if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
         
-        // Fact Table entry: guarantee stop presence even with no ETA
         ensureStopInMap(routeMap, {
           stopId: task.stopId,
           provider: task.provider,
@@ -1691,8 +1660,6 @@ function updateMetaText(stationName = '', statusMsg = '') {
       responses.forEach(({ task, json, items }) => {
         if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
 
-        // FACT TABLE OUTER JOIN: Force initialization of the stop in routeMap 
-        // even if the API yields an empty payload for CTB / KMB
         ensureStopInMap(routeMap, {
           stopId: task.stopId,
           provider: task.normProvider,
@@ -1712,17 +1679,12 @@ function updateMetaText(stationName = '', statusMsg = '') {
       });
     }
 
-// Add a filter step at the end of fetchEtas() before passing data to renderEtas()
-const groupedList = Object.values(routeMap)
-  .filter(r => {
-    // If it's a dummy placeholder with no route number and no ETAs, discard it
-    if (r.route === '---' && r.etas.length === 0) return false;
-    return true;
-  })
-  .map(r => {
-    r.etas.sort((a, b) => a.minutes - b.minutes);
-    return r;
-  });
+    const groupedList = Object.values(routeMap)
+      .filter(r => !(r.route === '---' && r.etas.length === 0))
+      .map(r => {
+        r.etas.sort((a, b) => a.minutes - b.minutes);
+        return r;
+      });
 
     if (generation !== etaRefreshGeneration) return;
 
