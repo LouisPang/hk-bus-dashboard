@@ -509,8 +509,6 @@
     let requestQueue = [];
     let activeRequests = 0;
     let providerRefreshTimestamps = { kmb: null, lwb: null, ctb: null };
-    let ctbDebugState = {};
-    const CTB_DEBUG_SAMPLE = { route: '1', stopId: '002403', direction: 'inbound' };
 
     function debounce(func, delay = 300) {
       let timer;
@@ -1149,87 +1147,233 @@
       if (!shouldShow) searchInput.value = '';
     }
 
-    const CTB_DEBUG_ENDPOINTS = [
-      { key:'company', label:'Company API', url:'https://rt.data.gov.hk/v2/transport/citybus/company/CTB' },
-      { key:'route', label:'Route API', url:'https://rt.data.gov.hk/v2/transport/citybus/route/CTB' },
-      { key:'routeStop', label:'Route-Stop API', url:'https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/1/inbound' },
-      { key:'stop', label:'Stop API', url:'https://rt.data.gov.hk/v2/transport/citybus/stop/002403' },
-      { key:'eta', label:'ETA API', url:'https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/002403/1' }
-    ];
+    // CTB Debug: validate the complete data pipeline in four checkpoints.
+    // The known-good sample chain is route 1 -> inbound -> stop 002403 -> ETA.
+    const CTB_DEBUG_SAMPLE = { route: '1', direction: 'inbound', stopId: '002403' };
+    let ctbDebugState = {
+      routeStop: {},
+      stopMatch: {},
+      eta: {},
+      normalized: {},
+      lastRun: null
+    };
 
-    function ctbDebugStatusClass(status) {
-      if (status === 'OK') return 'ctb-ok';
-      if (status === 'FAIL') return 'ctb-fail';
-      return 'ctb-pending';
+    const CTB_DEBUG_ENDPOINTS = {
+      route: 'https://rt.data.gov.hk/v2/transport/citybus/route/CTB/1',
+      routeStop: 'https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/1/inbound',
+      stop: 'https://rt.data.gov.hk/v2/transport/citybus/stop/002403',
+      eta: 'https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/002403/1'
+    };
+
+    function ctbDebugBadge(status) {
+      if (status === 'OK') return '<span class="ctb-ok">✓ OK</span>';
+      if (status === 'FAIL') return '<span class="ctb-fail">✕ FAIL</span>';
+      if (status === 'PENDING') return '<span class="ctb-pending">… TESTING</span>';
+      return '<span class="ctb-pending">--</span>';
+    }
+
+    function ctbDebugLastSuccess(state) {
+      return state?.lastSuccess ? formatClockTime(state.lastSuccess, true) : '--:--:--';
+    }
+
+    function ctbDebugError(error) {
+      return String(error?.message || error || '未知錯誤').slice(0, 240);
+    }
+
+    async function ctbDebugFetch(url) {
+      const started = performance.now();
+      const response = await fetch(url, { cache: 'no-store' });
+      const text = await response.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch (_) {}
+      const ms = Math.round(performance.now() - started);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}${text ? ` · ${text.slice(0, 180)}` : ''}`);
+      }
+      return { json, http: response.status, ms };
+    }
+
+    async function debugRouteStop() {
+      const state = { status: 'PENDING', lastSuccess: ctbDebugState.routeStop.lastSuccess || null };
+      ctbDebugState.routeStop = state;
+      renderCtbDebug();
+      try {
+        const { json, http, ms } = await ctbDebugFetch(CTB_DEBUG_ENDPOINTS.routeStop);
+        const rows = extractData(json);
+        const parsed = rows
+          .filter(x => x?.route && x?.stop)
+          .map(x => ({
+            route: String(x.route).toUpperCase(),
+            direction: String(x.direction || x.dir || '').toLowerCase(),
+            seq: Number(x.seq) || 0,
+            stopId: String(x.stop).padStart(6, '0'),
+            stopName: x.name_tc || x.name_en || x.stop_name_tc || x.stop_name_en || ''
+          }));
+        const first = parsed[0] || null;
+        const matchingStop = parsed.find(x => x.stopId === CTB_DEBUG_SAMPLE.stopId) || null;
+        const now = Date.now();
+        ctbDebugState.routeStop = {
+          status: 'OK', http, ms, count: parsed.length, lastSuccess: now,
+          rows: parsed, first, matchingStop,
+          generated: json?.generated_timestamp || ''
+        };
+        ctbDebugState.stopMatch = matchingStop
+          ? { status: 'OK', http, ms: 0, lastSuccess: now, row: matchingStop }
+          : { status: 'FAIL', error: `找不到 stop ${CTB_DEBUG_SAMPLE.stopId}`, lastSuccess: ctbDebugState.stopMatch.lastSuccess || null };
+      } catch (error) {
+        ctbDebugState.routeStop = { ...state, status: 'FAIL', error: ctbDebugError(error) };
+        ctbDebugState.stopMatch = { status: 'FAIL', error: 'Route-Stop 未成功，無法檢查 stop matching', lastSuccess: ctbDebugState.stopMatch.lastSuccess || null };
+      }
+      renderCtbDebug();
+    }
+
+    async function debugStopMatch() {
+      const previous = ctbDebugState.stopMatch || {};
+      if (ctbDebugState.stopMatch?.status === 'OK') return;
+      ctbDebugState.stopMatch = { ...previous, status: 'PENDING' };
+      renderCtbDebug();
+      try {
+        const { json, http, ms } = await ctbDebugFetch(CTB_DEBUG_ENDPOINTS.stop);
+        const rows = extractData(json);
+        const item = rows[0] || json?.data || null;
+        if (!item) throw new Error('Stop API 沒有返回 stop data');
+        const stopId = String(item.stop || CTB_DEBUG_SAMPLE.stopId).padStart(6, '0');
+        if (stopId !== CTB_DEBUG_SAMPLE.stopId) throw new Error(`返回 stop ${stopId}，不是 ${CTB_DEBUG_SAMPLE.stopId}`);
+        const now = Date.now();
+        ctbDebugState.stopMatch = {
+          status: 'OK', http, ms, count: rows.length || 1, lastSuccess: now,
+          stop: {
+            stopId,
+            nameTc: item.name_tc || '',
+            nameEn: item.name_en || '',
+            lat: item.lat ?? '',
+            lng: item.long ?? item.lng ?? ''
+          }
+        };
+      } catch (error) {
+        ctbDebugState.stopMatch = { ...previous, status: 'FAIL', error: ctbDebugError(error) };
+      }
+      renderCtbDebug();
+    }
+
+    async function debugEta() {
+      const previous = ctbDebugState.eta || {};
+      ctbDebugState.eta = { ...previous, status: 'PENDING' };
+      renderCtbDebug();
+      try {
+        const { json, http, ms } = await ctbDebugFetch(CTB_DEBUG_ENDPOINTS.eta);
+        const rows = extractData(json);
+        const now = Date.now();
+        ctbDebugState.eta = {
+          status: 'OK', http, ms, count: rows.length, lastSuccess: now,
+          generated: json?.generated_timestamp || '', rows
+        };
+        // This timestamp changes ONLY after a successful live ETA response.
+        markProviderRefresh('ctb');
+      } catch (error) {
+        ctbDebugState.eta = { ...previous, status: 'FAIL', error: ctbDebugError(error) };
+      }
+      renderCtbDebug();
+    }
+
+    function debugNormalizeEta() {
+      const rows = ctbDebugState.eta?.rows || [];
+      const sample = rows[0];
+      if (!sample) {
+        ctbDebugState.normalized = {
+          status: 'FAIL', error: '沒有 ETA record 可供 normalize', lastSuccess: ctbDebugState.normalized.lastSuccess || null
+        };
+      } else {
+        const item = normalizeEtaItem(sample, {
+          provider: 'ctb', stopId: CTB_DEBUG_SAMPLE.stopId, route: CTB_DEBUG_SAMPLE.route,
+          generatedTimestamp: ctbDebugState.eta.generated || ''
+        });
+        const valid = item.provider === 'ctb' && item.route === CTB_DEBUG_SAMPLE.route && item.stop === CTB_DEBUG_SAMPLE.stopId;
+        ctbDebugState.normalized = valid
+          ? { status: 'OK', lastSuccess: Date.now(), item }
+          : { status: 'FAIL', error: 'normalize 後的 provider / route / stop 不正確', item };
+      }
+      renderCtbDebug();
     }
 
     function renderCtbDebug() {
       const container = document.getElementById('eta-container');
       if (!container || currentMode !== 'ctb-debug') return;
-      const rows = CTB_DEBUG_ENDPOINTS.map(ep => {
-        const s = ctbDebugState[ep.key] || {};
-        const status = s.status || 'PENDING';
-        const last = s.lastSuccess ? formatClockTime(s.lastSuccess, true) : '--:--:--';
-        const detail = s.status === 'OK'
-          ? `${s.http || 200} · ${s.ms ?? '--'}ms · ${s.count ?? 0} records · 成功 ${last}`
-          : s.status === 'FAIL'
-            ? `${s.http ? 'HTTP '+s.http+' · ' : ''}${s.error || '請求失敗'} · 上次成功 ${last}`
-            : `尚未測試 · 上次成功 ${last}`;
-        return `<div class="ctb-debug-row">
-          <div><div class="ctb-debug-name">${escapeHtml(ep.label)}</div><div class="ctb-debug-detail">${escapeHtml(detail)}</div></div>
-          <div class="${ctbDebugStatusClass(status)}">${escapeHtml(status)}</div>
-          <div class="ctb-debug-detail">${escapeHtml(last)}</div>
-        </div>`;
-      }).join('');
 
-      const lastSuccess = providerRefreshTimestamps.ctb
+      const rs = ctbDebugState.routeStop || {};
+      const sm = ctbDebugState.stopMatch || {};
+      const eta = ctbDebugState.eta || {};
+      const norm = ctbDebugState.normalized || {};
+      const routeRows = rs.rows || [];
+      const match = rs.matchingStop || null;
+      const etaRows = eta.rows || [];
+      const normalized = norm.item || null;
+
+      const row = (title, state, detail) => `
+        <div class="ctb-debug-row">
+          <div><div class="ctb-debug-name">${escapeHtml(title)}</div><div class="ctb-debug-detail">${escapeHtml(detail)}</div></div>
+          <div>${ctbDebugBadge(state.status)}</div>
+          <div class="ctb-debug-detail">${escapeHtml(ctbDebugLastSuccess(state))}</div>
+        </div>`;
+
+      const lastCtb = providerRefreshTimestamps.ctb
         ? formatClockTime(providerRefreshTimestamps.ctb, true)
         : '--:--:--';
 
+      const routeStopDetail = rs.status === 'OK'
+        ? `${rs.http} · ${rs.ms}ms · ${rs.count} stops · ${match ? `找到 ${CTB_DEBUG_SAMPLE.stopId}` : `找不到 ${CTB_DEBUG_SAMPLE.stopId}`}`
+        : (rs.error || '尚未測試');
+      const stopDetail = sm.status === 'OK'
+        ? `${sm.http} · ${sm.ms}ms · ${sm.stop?.nameTc || sm.stop?.nameEn || CTB_DEBUG_SAMPLE.stopId}`
+        : (sm.error || '尚未測試');
+      const etaDetail = eta.status === 'OK'
+        ? `${eta.http} · ${eta.ms}ms · ${eta.count} ETA records`
+        : (eta.error || '尚未測試');
+      const normDetail = norm.status === 'OK'
+        ? `provider=${normalized.provider} · route=${normalized.route} · stop=${normalized.stop} · dest=${normalized.destination}`
+        : (norm.error || '尚未測試');
+
+      const sampleRows = etaRows.slice(0, 5).map(x => {
+        const etaText = x.eta ? new Date(x.eta).toLocaleTimeString('zh-HK', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--';
+        return `<div class="ctb-sample-row"><span>${escapeHtml(String(x.route || ''))}</span><span>${escapeHtml(String(x.stop || ''))}</span><span>${escapeHtml(etaText)}</span><span>${escapeHtml(x.rmk_tc || x.rmk || '')}</span></div>`;
+      }).join('');
+
       container.innerHTML = `<div class="ctb-debug-panel">
         <div class="ctb-debug-actions">
-          <button class="ctb-debug-btn" id="ctb-test-all">測試全部 CTB API</button>
+          <button class="ctb-debug-btn" id="ctb-test-all">測試完整流程</button>
           <button class="ctb-debug-btn secondary" id="ctb-test-eta">只測 ETA</button>
         </div>
-        <div class="ctb-debug-note">測試鏈：Route 1 → inbound → stop 002403。CTB 的 Stop API 必須帶 6 位 stop ID；不再測試不存在的「全部站點」Stop endpoint。最後成功更新時間只在成功回應後更新。</div>
-        <div class="ctb-debug-grid">${rows}</div>
-        <div class="ctb-debug-note"><strong>CTB 最後成功更新：</strong> ${escapeHtml(lastSuccess)}</div>
-        <div class="ctb-debug-note"><strong>手動測試 URL：</strong><br>${CTB_DEBUG_ENDPOINTS.map(ep => `<a class="ctb-debug-link" href="${escapeHtml(ep.url)}" target="_blank" rel="noopener">${escapeHtml(ep.url)}</a>`).join('<br>')}</div>
+        <div class="ctb-debug-note">固定測試：Route ${CTB_DEBUG_SAMPLE.route} → ${CTB_DEBUG_SAMPLE.direction} → Stop ${CTB_DEBUG_SAMPLE.stopId}。先確認 Route-Stop，再確認 Stop，再取 ETA，最後驗證統一資料格式。</div>
+        <div class="ctb-debug-grid">
+          ${row('① Route-Stop', rs, routeStopDetail)}
+          ${row('② Stop matching', sm, stopDetail)}
+          ${row('③ ETA', eta, etaDetail)}
+          ${row('④ Normalized Data', norm, normDetail)}
+        </div>
+        <div class="ctb-debug-note"><strong>CTB 最後成功更新：</strong> ${escapeHtml(lastCtb)}<br>（只有成功 ETA 回應才會更新；從未成功則保持 --:--:--）</div>
+        ${etaRows.length ? `<div class="ctb-debug-note"><strong>ETA 原始資料（最多 5 筆）</strong></div><div class="ctb-sample-table"><div class="ctb-sample-head"><span>Route</span><span>Stop</span><span>ETA</span><span>Remark</span></div>${sampleRows}</div>` : ''}
+        <div class="ctb-debug-note"><strong>測試 URL</strong><br>
+          <a class="ctb-debug-link" target="_blank" rel="noopener" href="${CTB_DEBUG_ENDPOINTS.routeStop}">Route-Stop</a><br>
+          <a class="ctb-debug-link" target="_blank" rel="noopener" href="${CTB_DEBUG_ENDPOINTS.stop}">Stop</a><br>
+          <a class="ctb-debug-link" target="_blank" rel="noopener" href="${CTB_DEBUG_ENDPOINTS.eta}">ETA</a>
+        </div>
       </div>`;
 
-      document.getElementById('ctb-test-all')?.addEventListener('click', () => runCtbDebug(false));
-      document.getElementById('ctb-test-eta')?.addEventListener('click', () => runCtbDebug(true));
+      document.getElementById('ctb-test-all')?.addEventListener('click', runCtbDebug);
+      document.getElementById('ctb-test-eta')?.addEventListener('click', async () => {
+        await debugEta();
+        debugNormalizeEta();
+      });
     }
 
-    async function debugFetchEndpoint(ep) {
-      const started = performance.now();
-      try {
-        const response = await fetch(ep.url, { cache:'no-store' });
-        const text = await response.text();
-        let json = null;
-        try { json = JSON.parse(text); } catch (_) {}
-        const ms = Math.round(performance.now() - started);
-        if (!response.ok) throw new Error(`HTTP ${response.status}${text ? ' · '+text.slice(0,120) : ''}`);
-        const count = Array.isArray(json?.data) ? json.data.length : (json?.data ? 1 : 0);
-        const now = Date.now();
-        ctbDebugState[ep.key] = { status:'OK', http:response.status, ms, count, lastSuccess:now, generated:json?.generated_timestamp || '' };
-        // Only a successful live ETA response updates the CTB refresh timestamp.
-        if (ep.key === 'eta') markProviderRefresh('ctb');
-      } catch (error) {
-        const old = ctbDebugState[ep.key] || {};
-        ctbDebugState[ep.key] = { ...old, status:'FAIL', error:String(error.message || error), http: old.http || null };
-      }
-    }
-
-    async function runCtbDebug(etaOnly = false) {
+    async function runCtbDebug() {
       if (currentMode !== 'ctb-debug') return;
-      const list = etaOnly ? CTB_DEBUG_ENDPOINTS.filter(ep => ep.key === 'eta') : CTB_DEBUG_ENDPOINTS;
-      list.forEach(ep => { ctbDebugState[ep.key] = { ...(ctbDebugState[ep.key] || {}), status:'PENDING' }; });
+      ctbDebugState.lastRun = Date.now();
+      await debugRouteStop();
+      await debugStopMatch();
+      await debugEta();
+      debugNormalizeEta();
       renderCtbDebug();
-      for (const ep of list) {
-        await debugFetchEndpoint(ep);
-        renderCtbDebug();
-      }
     }
 
     function attachModeHandlers() {
@@ -1408,12 +1552,39 @@
       }
     }
 
+    let ctbStopInventoryCache = null;
+    let ctbStopInventoryFetchedAt = 0;
+    const CTB_STOP_CACHE_TTL = 15 * 60 * 1000;
+
     async function fetchCtbStops() {
-      // IMPORTANT: CTB V2 Stop API is /stop/{stop_id}; there is no documented
-      // /stop endpoint returning the complete stop inventory. Calling the
-      // latter was the reason our previous CTB discovery failed. CTB nearby
-      // discovery will be added separately using a proper stop inventory source.
-      return [];
+      // CTB publishes a complete Bus Stop data resource at /v2/transport/citybus/stop.
+      // This is the correct inventory for nearby-stop discovery; the single-stop
+      // endpoint /stop/{stop_id} is only needed when looking up one stop in detail.
+      if (ctbStopInventoryCache && Date.now() - ctbStopInventoryFetchedAt < CTB_STOP_CACHE_TTL) {
+        return ctbStopInventoryCache;
+      }
+
+      try {
+        const json = await fetchJson('https://rt.data.gov.hk/v2/transport/citybus/stop');
+        const rows = extractData(json);
+        ctbStopInventoryCache = rows
+          .map(stop => ({
+            ...stop,
+            stop: String(stop.stop ?? '').padStart(6, '0'),
+            provider: 'ctb',
+            co: 'CTB'
+          }))
+          .filter(stop =>
+            stop.stop &&
+            Number.isFinite(parseFloat(stop.lat)) &&
+            Number.isFinite(parseFloat(stop.long))
+          );
+        ctbStopInventoryFetchedAt = Date.now();
+        return ctbStopInventoryCache;
+      } catch (error) {
+        console.error('CTB stop inventory failed:', error);
+        return [];
+      }
     }
 
     async function initStops() {
@@ -1421,8 +1592,19 @@
         fetchKmbStops(),
         fetchCtbStops()
       ]);
+
       allStops = [...kmbStops, ...ctbStops];
       buildStopMetaMap();
+
+      // Keep a simple diagnostic count available to CTB Debug.
+      if (typeof ctbDebugState !== 'undefined') {
+        ctbDebugState.stopInventory = {
+          status: ctbStops.length ? 'OK' : 'FAIL',
+          count: ctbStops.length,
+          lastSuccess: ctbStops.length ? Date.now() : (ctbDebugState.stopInventory?.lastSuccess || null),
+          error: ctbStops.length ? '' : 'CTB stop inventory returned no usable stops'
+        };
+      }
     }
 
     async function buildCtbNearbyStopsFromRoutes() {
@@ -1915,17 +2097,22 @@
 
       routes.forEach(r => {
         const stopId = r.stopId || 'unknown';
+        const provider = normalizeProvider(r.provider);
+        // Stop IDs are provider-scoped. CTB and KMB can legitimately use
+        // the same-looking ID, so grouping by stopId alone can merge unrelated stops.
+        const stopKey = `${provider}|${stopId}`;
 
-        if (!stopsMap.has(stopId)) {
-          stopsMap.set(stopId, {
+        if (!stopsMap.has(stopKey)) {
+          stopsMap.set(stopKey, {
             stopId,
+            provider,
             stopName: r.stopName || '站點資料未提供',
             stopDistance: r.stopDistance,
             items: []
           });
         }
 
-        stopsMap.get(stopId).items.push(r);
+        stopsMap.get(stopKey).items.push(r);
       });
 
       const isExactMatch = routeStr =>
