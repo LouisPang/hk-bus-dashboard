@@ -60,7 +60,6 @@
       margin-top: 4px;
     }
 
-
     .weather-summary {
       margin-top: 5px;
       font-size: 0.95rem;
@@ -90,9 +89,7 @@
     .weather-commute.alert { color: var(--urgent); }
     .weather-commute.good { color: var(--safe); }
 
-    .weather-source {
-      display: none;
-    }
+    .weather-source { display: none; }
 
     #clock {
       font-size: 3.2rem;
@@ -157,9 +154,7 @@
       flex-shrink: 0;
     }
 
-    .toolbar-search.hidden {
-      display: none;
-    }
+    .toolbar-search.hidden { display: none; }
 
     .toolbar-search input {
       background: transparent;
@@ -171,9 +166,7 @@
       font-family: inherit;
     }
 
-    .toolbar-search input::placeholder {
-      color: var(--subtext);
-    }
+    .toolbar-search input::placeholder { color: var(--subtext); }
 
     #eta-container {
       flex: 1;
@@ -241,9 +234,7 @@
       flex-shrink: 0;
     }
 
-    .eta-card:last-child {
-      border-bottom: none;
-    }
+    .eta-card:last-child { border-bottom: none; }
 
     .route-info {
       display: flex;
@@ -253,20 +244,10 @@
       flex: 1;
     }
 
-
     .destination-wrap {
       min-width: 0;
       overflow: hidden;
       flex: 1;
-    }
-
-    .route-meta {
-      font-size: 0.68rem;
-      color: var(--subtext);
-      margin-top: 2px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
 
     .eta-time-stack {
@@ -307,9 +288,7 @@
       row-gap: 0;
     }
 
-    .eta-card:has(.eta-remark) .eta-remark {
-      grid-column: 1 / -1;
-    }
+    .eta-card:has(.eta-remark) .eta-remark { grid-column: 1 / -1; }
 
     .route-badge {
       color: #fff;
@@ -369,13 +348,8 @@
       transition: transform 0.1s ease, color 0.1s ease;
     }
 
-    .save-route-btn.saved {
-      color: var(--accent);
-    }
-
-    .save-route-btn:active {
-      transform: scale(1.2);
-    }
+    .save-route-btn.saved { color: var(--accent); }
+    .save-route-btn:active { transform: scale(1.2); }
 
     .due { color: var(--urgent); animation: pulse 1.5s infinite; }
     .urgent { color: var(--urgent); }
@@ -403,27 +377,20 @@
         gap: 10px;
         align-content: start;
       }
-
-      #eta-container.daily-columns .stop-group {
-        margin-bottom: 0;
-      }
+      #eta-container.daily-columns .stop-group { margin-bottom: 0; }
     }
+
+    .provider-status {
+      display: inline-flex;
+      gap: 12px;
+      align-items: center;
+      font-size: 14px;
+    }
+    .provider-status .ok { color: #22c55e; }
+    .provider-status .err { color: #ef4444; }
+    .provider-status .loading { color: #f59e0b; }
+    .provider-status .muted { color: #9ca3af; }
   </style>
-
-<style id="provider-status-style">
-.provider-status {
-  display:inline-flex;
-  gap:12px;
-  align-items:center;
-  font-size:14px;
-}
-.provider-status .ok { color:#22c55e; }
-.provider-status .err { color:#ef4444; }
-.provider-status .loading { color:#f59e0b; }
-.provider-status .muted { color:#9ca3af; }
-.provider-status .status-detail { opacity:.9; margin-left:4px; }
-</style>
-
 </head>
 <body>
   <header>
@@ -449,19 +416,17 @@
 
   <div id="toolbar-search" class="toolbar-search hidden">
     <div id="providerStatus" class="provider-status">
-  <span id="kmbStatus" class="muted">KMB/LWB 更新 --:--</span>
-  <span id="ctbStatus" class="muted">CTB 更新 --:--</span>
-</div>
-<input id="nearby-search" type="text" placeholder="搜尋路線號碼 (例如: 271, 1A)" autocomplete="off" />
+      <span id="kmbStatus" class="muted">KMB/LWB 更新 --:--</span>
+      <span id="ctbStatus" class="muted">CTB 更新 --:--</span>
+    </div>
+    <input id="nearby-search" type="text" placeholder="搜尋路線號碼 (例如: 271, 1A)" autocomplete="off" />
   </div>
 
   <div id="eta-container">
     <div class="status-msg">正在初始化儀表板...</div>
   </div>
 
-  <style>
-  </style>
- <script>
+  <script>
   const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
   const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db.v5';
   const ROUTE_DB_TTL = 86400000;
@@ -483,10 +448,14 @@
 
   let activeStopIds = [];
   let nearbyStopIds = [];
+
+  let latestEtaResults = [];
+  let latestGeneratedTimestamps = new Set();
   let currentTemp = '';
   let weatherState = { summary: '', forecast: '', outlook: '', psr: '', warning: '', updated: null };
   let currentMode = 'nearby';
   let etaPollTimer = null;
+  let etaRefreshGeneration = 0;
   let savedRoutes = [];
   let etaCache = new Map();
   let requestQueue = [];
@@ -498,20 +467,15 @@
     ctb: { state: 'idle', lastSuccess: null, lastAttempt: null, error: '' }
   };
 
-  /* LocalStorage & Saved Routes Management */
   function loadSavedRoutes() {
     try {
       const data = localStorage.getItem(STORAGE_KEY);
       savedRoutes = data ? JSON.parse(data) : [];
-    } catch (e) {
-      savedRoutes = [];
-    }
+    } catch (e) { savedRoutes = []; }
   }
 
   function saveSavedRoutes() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(savedRoutes));
-    } catch (e) {}
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(savedRoutes)); } catch (e) {}
   }
 
   function getSavedRouteKey(route, dest, stopId, provider = 'kmb', serviceType = 1, dir = '') {
@@ -542,7 +506,6 @@
     saveSavedRoutes();
   }
 
-  /* Stop Metadata Indexing */
   function getStopKey(stopId, provider = 'kmb') {
     return `${normalizeProvider(provider)}|${String(stopId).padStart(6, '0')}`;
   }
@@ -571,12 +534,10 @@
     return stopMetaMap[key] || null;
   }
 
-  /* Weather Helpers */
   function buildCommuteAdvice(rhr, flw, fnd, warnsum) {
     let summary = '🌤️ 天氣大致良好';
     let advice = '適合出行';
     let psr = 'GOOD';
-
     if (warnsum && Object.keys(warnsum).length > 0) {
       summary = '⚠️ 警告生效中';
       advice = '請留意天氣警告';
@@ -592,7 +553,6 @@
     if (adviceEl) adviceEl.textContent = advice.advice;
   }
 
-  /* Core Utilities & Network */
   function applyLocation(lat, lng, sourceLabel) {
     userLocation = { lat, lng };
     locationSource = sourceLabel;
@@ -708,7 +668,6 @@
       const text = await response.text();
       let json;
       try { json = JSON.parse(text); } catch { throw new Error(`HTTP ${response.status} / invalid JSON`); }
-
       markProviderSuccess(provider);
       return json;
     } catch (err) {
@@ -880,50 +839,6 @@
     try { return await ctbRouteStopLoadPromise; } finally { ctbRouteStopLoadPromise = null; }
   }
 
-async function findRouteStopsAcrossProviders(query) {
-  const q = String(query || '').trim().toUpperCase();
-  const db = await getOrFetchRouteDB();
-
-  // Load CTB route-stop database if not already cached
-  try { await loadCtbRouteStopDatabase(false); } catch (e) {}
-
-  const targetStops = [];
-
-  // Helper function to search a specific provider's database
-  const addMatches = (providerName) => {
-    Object.entries(db[providerName] || {}).forEach(([route, rows]) => {
-      if (route.includes(q)) {
-        rows.forEach(row => targetStops.push(row));
-      }
-    });
-  };
-
-  // Search across ALL providers
-  addMatches('kmb');
-  addMatches('lwb');
-  addMatches('ctb');
-
-  // Deduplicate results
-  const seen = new Set();
-  const unique = targetStops.filter(row => {
-    const key = `${row.provider}|${row.stopId}|${row.route}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  // Sort exact route matches to the top
-  unique.sort((a, b) => {
-    const aExact = String(a.route).toUpperCase() === q ? 0 : 1;
-    const bExact = String(b.route).toUpperCase() === q ? 0 : 1;
-    if (aExact !== bExact) return aExact - bExact;
-    const providerOrder = { kmb: 0, ctb: 1, lwb: 2 };
-    return (providerOrder[a.provider] ?? 9) - (providerOrder[b.provider] ?? 9);
-  });
-
-  return unique;
-}
-
   async function fetchWeather() {
     try {
       const base = 'https://data.weather.gov.hk/weatherAPI/opendata/weather.php';
@@ -959,20 +874,17 @@ async function findRouteStopsAcrossProviders(query) {
     document.getElementById('meta-text').textContent = parts.join(' • ');
   }
 
-function updateSearchVisibility() {
-  const searchContainer = document.getElementById('toolbar-search');
-  const searchInput = document.getElementById('nearby-search');
-  if (!searchContainer || !searchInput) return;
+  function updateSearchVisibility() {
+    const searchContainer = document.getElementById('toolbar-search');
+    const searchInput = document.getElementById('nearby-search');
+    if (!searchContainer || !searchInput) return;
 
-  const shouldShow = currentMode === 'nearby';
-
-  // Toggle the hidden class on the outer container
-  searchContainer.classList.toggle('hidden', !shouldShow);
-
-  if (!shouldShow) {
-    searchInput.value = '';
+    const shouldShow = currentMode === 'nearby';
+    searchContainer.classList.toggle('hidden', !shouldShow);
+    if (!shouldShow) {
+      searchInput.value = '';
+    }
   }
-}
 
   function attachModeHandlers() {
     document.querySelectorAll('.mode-button').forEach(button => {
@@ -1000,33 +912,119 @@ function updateSearchVisibility() {
           }
         } else {
           await initNearbyStops();
+          renderEtas(latestEtaResults, latestGeneratedTimestamps);
         }
       });
     });
+
+    async function fetchCtbSearchRoute(routeQuery) {
+      const q = String(routeQuery || '').trim().toUpperCase();
+      if (!q || currentMode !== 'nearby') return;
+
+      const nearbyCtbStops = nearbyStopIds
+        .filter(s => normalizeProvider(s.provider) === 'ctb')
+        .slice()
+        .sort((a, b) => (a.stopDistance ?? Infinity) - (b.stopDistance ?? Infinity))
+        .slice(0, 6);
+
+      if (!nearbyCtbStops.length) return;
+
+      const routeMap = {};
+      const generated = new Set();
+
+      const responses = await Promise.all(
+        nearbyCtbStops.map(async stop => {
+          try {
+            const json = await fetchCtbRouteEta(stop.stopId, q);
+            return { stop, json, items: extractData(json) };
+          } catch (error) {
+            return { stop, json: null, items: [] };
+          }
+        })
+      );
+
+      responses.forEach(({ stop, json, items }) => {
+        if (json?.generated_timestamp) generated.add(json.generated_timestamp);
+
+        // If CTB API returned empty items for searched route, outer join empty entry so stop appears
+        if (!items || items.length === 0) {
+          ensureStopInMap(routeMap, {
+            stopId: stop.stopId,
+            provider: 'ctb',
+            route: q,
+            dest: '預設方向',
+            generatedTimestamp: json?.generated_timestamp || ''
+          });
+          return;
+        }
+
+        items.forEach(rawItem => {
+          const item = normalizeEtaItem(rawItem, {
+            provider: 'ctb',
+            stopId: stop.stopId,
+            route: q,
+            generatedTimestamp: json?.generated_timestamp || ''
+          });
+
+          if (normalizeProvider(item.provider) !== 'ctb') return;
+          if (String(item.route || '').toUpperCase() !== q) return;
+          addEtaRecord(routeMap, item, new Date());
+        });
+      });
+
+      const ctbResults = Object.values(routeMap).map(r => {
+        r.etas.sort((a, b) => a.minutes - b.minutes);
+        return r;
+      });
+
+      if (!ctbResults.length) return;
+
+      const currentQuery = document.getElementById('nearby-search')?.value.trim().toUpperCase();
+      if (currentMode !== 'nearby' || currentQuery !== q) return;
+
+      const merged = [...latestEtaResults];
+      const keys = new Set(
+        merged.map(r => `${normalizeProvider(r.provider)}|${r.stopId}|${r.route}|${r.dest}`)
+      );
+
+      ctbResults.forEach(r => {
+        const key = `${normalizeProvider(r.provider)}|${r.stopId}|${r.route}|${r.dest}`;
+        if (!keys.has(key)) {
+          merged.push(r);
+          keys.add(key);
+        } else {
+          const idx = merged.findIndex(x =>
+            `${normalizeProvider(x.provider)}|${x.stopId}|${x.route}|${x.dest}` === key
+          );
+          if (idx >= 0) merged[idx] = r;
+        }
+      });
+
+      latestEtaResults = merged;
+      generated.forEach(ts => latestGeneratedTimestamps.add(ts));
+      renderEtas(latestEtaResults, latestGeneratedTimestamps);
+    }
 
     const searchInput = document.getElementById('nearby-search');
     if (searchInput) {
       searchInput.addEventListener('input', debounce(async event => {
         if (currentMode !== 'nearby') return;
+
         const value = event.target.value.trim().toUpperCase();
 
-        if (!value) {
-          activeStopIds = nearbyStopIds.slice();
-          startEtaLoop();
-          return;
+        renderEtas(latestEtaResults, latestGeneratedTimestamps);
+
+        if (value) {
+          const hasCtbMatch = latestEtaResults.some(r =>
+            normalizeProvider(r.provider) === 'ctb' &&
+            String(r.route || '').trim().toUpperCase() === value
+          );
+
+          if (!hasCtbMatch) {
+            fetchCtbSearchRoute(value);
+          }
         }
-
-        const rows = await findRouteStopsAcrossProviders(value);
-        let targetStops = rows.map(s => ({ stopId: s.stopId, provider: s.provider || 'kmb' })).slice(0, 80);
-
-        if (targetStops.length === 0) {
-          document.getElementById('eta-container').innerHTML = '<div class="status-msg">沒有符合搜尋條件的路線。</div>';
-          return;
-        }
-
-        activeStopIds = targetStops;
-        startEtaLoop();
-      }, 300));
+      }, 80));
     }
 
     document.addEventListener('click', event => {
@@ -1333,10 +1331,19 @@ function updateSearchVisibility() {
     }, 20000);
   }
 
+  function cancelQueuedEtaRequests() {
+    const pending = requestQueue.splice(0);
+    pending.forEach(item => {
+      try { item.reject(new Error('ETA refresh superseded')); } catch (e) {}
+    });
+  }
+
   async function startEtaLoop() {
     stopEtaLoop();
-    await fetchEtas();
-    scheduleNextEtaPoll();
+    const generation = ++etaRefreshGeneration;
+    cancelQueuedEtaRequests();
+    await fetchEtas(generation);
+    if (generation === etaRefreshGeneration) scheduleNextEtaPoll();
   }
 
   function enqueueRequest(task) {
@@ -1460,142 +1467,179 @@ function updateSearchVisibility() {
     return tasks;
   }
 
-async function fetchEtas() {
-  if (!activeStopIds.length) return;
+  function ensureStopInMap(routeMap, meta) {
+    const stopId = meta.stopId;
+    const provider = normalizeProvider(meta.provider);
+    const route = meta.route || '---';
+    const destination = meta.dest || '站點服務';
+    const key = [provider, stopId, route, destination].join('|');
 
-  const routeMap = {};
-  const now = new Date();
-  const generatedTimestamps = new Set();
-  const searchInput = document.getElementById('nearby-search');
-  const searchQuery = currentMode === 'nearby' && searchInput ? searchInput.value.trim().toUpperCase() : '';
+    if (!routeMap[key]) {
+      const stopLabel = getStopName(stopId, provider);
+      const stopInfo = getStopInfo(stopId, provider);
+      const stopDistance = userLocation && stopInfo
+        ? getDistanceKm(userLocation.lat, userLocation.lng, parseFloat(stopInfo.lat), parseFloat(stopInfo.long))
+        : Number.POSITIVE_INFINITY;
 
-  if (currentMode === 'daily' && savedRoutes.length > 0) {
-    const tasks = buildDailyTasks();
-    const responses = await Promise.all(
-      tasks.map(async task => {
-        try {
-          const json = normalizeProvider(task.provider) === 'ctb'
-            ? await fetchCtbRouteEta(task.stopId, task.route)
-            : await fetchKmbRouteEta(task.stopId, task.route, task.serviceType);
-          return { task, json, items: extractData(json) };
-        } catch (error) { return { task, json: null, items: [] }; }
-      })
-    );
-
-    responses.forEach(({ task, json, items }) => {
-      if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
-      const savedMatches = savedRoutes.filter(saved =>
-        saved.stopId === task.stopId &&
-        normalizeProvider(saved.provider) === normalizeProvider(task.provider) &&
-        String(saved.route).toUpperCase() === String(task.route).toUpperCase() &&
-        normalizeServiceType(saved.serviceType) === task.serviceType
-      );
-
-      items.forEach(rawItem => {
-        const item = normalizeEtaItem(rawItem, {
-          provider: normalizeProvider(task.provider),
-          stopId: task.stopId,
-          route: task.route,
-          serviceType: task.serviceType,
-          dir: task.dir,
-          dest: task.dest,
-          generatedTimestamp: json?.generated_timestamp || ''
-        });
-
-        if (normalizeProvider(item.provider) !== normalizeProvider(task.provider)) return;
-        if (item.route.toUpperCase() !== String(task.route).toUpperCase()) return;
-        if (task.dir && item.dir && item.dir !== task.dir) return;
-
-        const savedMatch = savedMatches.find(saved => normalizeProvider(task.provider) === 'ctb' ? true : (saved.dir ? saved.dir === item.dir : true));
-        if (!savedMatch) return;
-
-        addEtaRecord(routeMap, item, now);
-      });
-    });
-  } else {
-    // Group stop tasks using normalized provider name
-    const stopTasks = [...new Map(activeStopIds.map(item => [
-      `${normalizeProvider(item.provider)}|${item.stopId}`,
-      { ...item, normProvider: normalizeProvider(item.provider) }
-    ])).values()];
-
-    const responses = await Promise.all(
-      stopTasks.map(async task => {
-        try {
-          const json = task.normProvider === 'ctb'
-            ? await fetchCtbStopEta(task.stopId)
-            : await fetchKmbStopEta(task.stopId);
-          return { task, json, items: extractData(json) };
-        } catch (error) { return { task, json: null, items: [] }; }
-      })
-    );
-
-    responses.forEach(({ task, json, items }) => {
-      if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
-      items.forEach(rawItem => {
-        const item = normalizeEtaItem(rawItem, {
-          provider: task.normProvider,
-          stopId: task.stopId,
-          generatedTimestamp: json?.generated_timestamp || ''
-        });
-
-        // Use normalized provider check to prevent dropping KMB/LWB results
-        if (normalizeProvider(item.provider) !== task.normProvider) return;
-        if (searchQuery && !item.route.toUpperCase().includes(searchQuery)) return;
-
-        addEtaRecord(routeMap, item, now);
-      });
-    });
+      routeMap[key] = {
+        route: route,
+        dest: destination,
+        stopId,
+        provider,
+        serviceType: meta.serviceType || 1,
+        dir: meta.dir || '',
+        stopName: stopLabel,
+        stopDistance,
+        generatedTimestamp: meta.generatedTimestamp || '',
+        etas: []
+      };
+    }
+    return routeMap[key];
   }
 
-  const groupedList = Object.values(routeMap).map(r => {
-    r.etas.sort((a, b) => a.minutes - b.minutes);
-    return r;
-  });
+  async function fetchEtas(generation = etaRefreshGeneration) {
+    if (!activeStopIds.length) return;
 
-  renderEtas(groupedList, generatedTimestamps);
-  updateLastUpdated([...new Set(groupedList.map(item => item.provider))]);
-}
+    const routeMap = {};
+    const now = new Date();
+    const generatedTimestamps = new Set();
+
+    if (currentMode === 'daily' && savedRoutes.length > 0) {
+      const tasks = buildDailyTasks();
+      const responses = await Promise.all(
+        tasks.map(async task => {
+          try {
+            const json = normalizeProvider(task.provider) === 'ctb'
+              ? await fetchCtbRouteEta(task.stopId, task.route)
+              : await fetchKmbRouteEta(task.stopId, task.route, task.serviceType);
+            return { task, json, items: extractData(json) };
+          } catch (error) { return { task, json: null, items: [] }; }
+        })
+      );
+
+      responses.forEach(({ task, json, items }) => {
+        if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
+        
+        // Fact Table entry: guarantee stop presence even with no ETA
+        ensureStopInMap(routeMap, {
+          stopId: task.stopId,
+          provider: task.provider,
+          route: task.route,
+          dest: task.dest,
+          serviceType: task.serviceType,
+          dir: task.dir,
+          generatedTimestamp: json?.generated_timestamp || ''
+        });
+
+        const savedMatches = savedRoutes.filter(saved =>
+          saved.stopId === task.stopId &&
+          normalizeProvider(saved.provider) === normalizeProvider(task.provider) &&
+          String(saved.route).toUpperCase() === String(task.route).toUpperCase() &&
+          normalizeServiceType(saved.serviceType) === task.serviceType
+        );
+
+        items.forEach(rawItem => {
+          const item = normalizeEtaItem(rawItem, {
+            provider: normalizeProvider(task.provider),
+            stopId: task.stopId,
+            route: task.route,
+            serviceType: task.serviceType,
+            dir: task.dir,
+            dest: task.dest,
+            generatedTimestamp: json?.generated_timestamp || ''
+          });
+
+          if (normalizeProvider(item.provider) !== normalizeProvider(task.provider)) return;
+          if (item.route.toUpperCase() !== String(task.route).toUpperCase()) return;
+          if (task.dir && item.dir && item.dir !== task.dir) return;
+
+          const savedMatch = savedMatches.find(saved => normalizeProvider(task.provider) === 'ctb' ? true : (saved.dir ? saved.dir === item.dir : true));
+          if (!savedMatch) return;
+
+          addEtaRecord(routeMap, item, now);
+        });
+      });
+    } else {
+      const stopTasks = [...new Map(activeStopIds.map(item => [
+        `${normalizeProvider(item.provider)}|${item.stopId}`,
+        { ...item, normProvider: normalizeProvider(item.provider) }
+      ])).values()];
+
+      const responses = await Promise.all(
+        stopTasks.map(async task => {
+          try {
+            const json = task.normProvider === 'ctb'
+              ? await fetchCtbStopEta(task.stopId)
+              : await fetchKmbStopEta(task.stopId);
+
+            return { task, json, items: extractData(json) };
+          } catch (error) {
+            return { task, json: null, items: [] };
+          }
+        })
+      );
+
+      responses.forEach(({ task, json, items }) => {
+        if (json?.generated_timestamp) generatedTimestamps.add(json.generated_timestamp);
+
+        // FACT TABLE OUTER JOIN: Force initialization of the stop in routeMap 
+        // even if the API yields an empty payload for CTB / KMB
+        ensureStopInMap(routeMap, {
+          stopId: task.stopId,
+          provider: task.normProvider,
+          generatedTimestamp: json?.generated_timestamp || ''
+        });
+
+        items.forEach(rawItem => {
+          const item = normalizeEtaItem(rawItem, {
+            provider: task.normProvider,
+            stopId: task.stopId,
+            generatedTimestamp: json?.generated_timestamp || ''
+          });
+
+          if (normalizeProvider(item.provider) !== task.normProvider) return;
+          addEtaRecord(routeMap, item, now);
+        });
+      });
+    }
+
+    const groupedList = Object.values(routeMap).map(r => {
+      r.etas.sort((a, b) => a.minutes - b.minutes);
+      return r;
+    });
+
+    if (generation !== etaRefreshGeneration) return;
+
+    latestEtaResults = groupedList;
+    latestGeneratedTimestamps = new Set(generatedTimestamps);
+
+    renderEtas(latestEtaResults, latestGeneratedTimestamps);
+    updateLastUpdated([...new Set(groupedList.map(item => item.provider))]);
+  }
 
   function addEtaRecord(routeMap, item, now) {
     if (!item.route || !item.stop) return;
 
     const stopId = item.stop;
     const provider = normalizeProvider(item.provider);
-    const stopLabel = getStopName(stopId, provider);
-    const stopInfo = getStopInfo(stopId, provider);
-
-    const stopDistance = userLocation && stopInfo
-      ? getDistanceKm(userLocation.lat, userLocation.lng, parseFloat(stopInfo.lat), parseFloat(stopInfo.long))
-      : Number.POSITIVE_INFINITY;
-
     const destination = item.destination;
-    const serviceType = normalizeServiceType(item.serviceType);
-    const dir = normalizeDirection(item.dir);
 
-    const key = [provider, stopId, item.route, destination].join('|');
-
-    if (!routeMap[key]) {
-      routeMap[key] = {
-        route: item.route,
-        dest: destination,
-        stopId,
-        provider,
-        serviceType,
-        dir,
-        stopName: stopLabel,
-        stopDistance,
-        generatedTimestamp: item.generatedTimestamp || '',
-        etas: []
-      };
-    }
+    const record = ensureStopInMap(routeMap, {
+      stopId,
+      provider,
+      route: item.route,
+      dest: destination,
+      serviceType: item.serviceType,
+      dir: item.dir,
+      generatedTimestamp: item.generatedTimestamp
+    });
 
     if (item.eta && String(item.eta).trim() !== '') {
       const etaTime = new Date(item.eta);
       const diffMins = Math.round((etaTime - now) / 60000);
 
       if (diffMins >= 0 && diffMins <= 180) {
-        routeMap[key].etas.push({
+        record.etas.push({
           minutes: diffMins,
           timestamp: item.eta,
           etaSeq: item.etaSeq,
@@ -1608,13 +1652,14 @@ async function fetchEtas() {
   function renderEtas(routes, generatedTimestamps = new Set()) {
     const container = document.getElementById('eta-container');
     const searchInput = document.getElementById('nearby-search');
-    const searchQuery = currentMode === 'nearby' && searchInput ? searchInput.value.trim().toUpperCase() : '';
+    const searchQuery = currentMode === 'nearby' && searchInput
+      ? searchInput.value.trim().toUpperCase()
+      : '';
 
     if (searchQuery) {
-      const hasExactMatch = routes.some(r => r.route.toUpperCase() === searchQuery);
-      routes = hasExactMatch
-        ? routes.filter(r => r.route.toUpperCase() === searchQuery)
-        : routes.filter(r => r.route.toUpperCase().includes(searchQuery));
+      routes = routes.filter(r =>
+        String(r.route || '').trim().toUpperCase() === searchQuery
+      );
     }
 
     if (routes.length === 0) {
@@ -1641,23 +1686,15 @@ async function fetchEtas() {
       stopsMap.get(stopKey).items.push(r);
     });
 
-    const isExactMatch = routeStr => searchQuery && routeStr.toUpperCase() === searchQuery;
-
     const sortedStops = [...stopsMap.values()].sort((a, b) => {
       const distA = Number.isFinite(a.stopDistance) ? a.stopDistance : Infinity;
       const distB = Number.isFinite(b.stopDistance) ? b.stopDistance : Infinity;
-
-      if (currentMode === 'nearby' && searchQuery) {
-        const exactA = a.items.some(item => isExactMatch(item.route));
-        const exactB = b.items.some(item => isExactMatch(item.route));
-        if (exactA !== exactB) return exactA ? -1 : 1;
-      }
 
       if (distA !== distB) return distA - distB;
 
       if (currentMode === 'daily') {
         const indexA = savedRoutes.findIndex(item => item.stopId === a.stopId);
-        const indexB = savedRoutes.findIndex(item => item.stopId === b.stopId);
+        const indexB = savedRoutes.findIndex(item => item.stopId === b.stopB);
         return (indexA !== -1 ? indexA : 999) - (indexB !== -1 ? indexB : 999);
       }
 
@@ -1668,12 +1705,6 @@ async function fetchEtas() {
       const stopDistanceText = Number.isFinite(stopDistance) ? `${Math.round(stopDistance * 1000)}m` : '站點';
 
       items.sort((a, b) => {
-        if (currentMode === 'nearby' && searchQuery) {
-          const exactA = isExactMatch(a.route);
-          const exactB = isExactMatch(b.route);
-          if (exactA !== exactB) return exactA ? -1 : 1;
-        }
-
         const etaA = a.etas[0]?.minutes ?? 9999;
         const etaB = b.etas[0]?.minutes ?? 9999;
         if (etaA !== etaB) return etaA - etaB;
@@ -1779,6 +1810,6 @@ async function fetchEtas() {
 
   updateSearchVisibility();
   initDashboard();
-</script>
+  </script>
 </body>
 </html>
