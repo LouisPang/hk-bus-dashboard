@@ -608,11 +608,20 @@
         const raw = localStorage.getItem(STORAGE_KEY);
         const parsed = raw ? JSON.parse(raw) : [];
         savedRoutes = Array.isArray(parsed)
-          ? parsed.map(item => ({
-              ...item,
-              provider: normalizeProvider(item.provider),
-              serviceType: normalizeServiceType(item.serviceType)
-            }))
+          ? parsed.map(item => {
+              const provider = normalizeProvider(item.provider);
+              const serviceType = normalizeServiceType(item.serviceType);
+              const dir = normalizeDirection(item.dir);
+              return {
+                ...item,
+                provider,
+                serviceType,
+                dir,
+                // Migrate older saved-route keys to the four-part identity:
+                // provider + stopId + route + destination.
+                key: getSavedRouteKey(item.route, item.dest, item.stopId, provider)
+              };
+            })
           : [];
       } catch (e) {
         savedRoutes = [];
@@ -632,14 +641,16 @@
       });
     }
 
-    function getSavedRouteKey(route, dest, stopId, provider = 'kmb', serviceType = 1, dir = '') {
+    // Saved-route identity intentionally remains simple:
+    // provider + stopId + route + destination.
+    // Direction/service type are still retained as API metadata, but do not
+    // create separate saved-route identities.
+    function getSavedRouteKey(route, dest, stopId, provider = 'kmb') {
       return [
         normalizeProvider(provider),
-        String(route),
-        String(dest),
         String(stopId),
-        normalizeServiceType(serviceType),
-        normalizeDirection(dir)
+        String(route),
+        String(dest)
       ].join('|');
     }
 
@@ -649,23 +660,19 @@
           item.route,
           item.dest,
           item.stopId,
-          item.provider,
-          item.serviceType,
-          item.dir
+          item.provider
         )
       ));
     }
 
     function isSavedRoute(route, dest, stopId, provider = 'kmb', serviceType = 1, dir = '') {
-      const key = getSavedRouteKey(route, dest, stopId, provider, serviceType, dir);
+      const key = getSavedRouteKey(route, dest, stopId, provider);
       return savedRoutes.some(item =>
         getSavedRouteKey(
           item.route,
           item.dest,
           item.stopId,
-          item.provider,
-          item.serviceType,
-          item.dir
+          item.provider
         ) === key
       );
     }
@@ -691,9 +698,7 @@
         route,
         dest,
         stopId,
-        normalizedProvider,
-        normalizedServiceType,
-        normalizedDir
+        normalizedProvider
       );
 
       savedRoutes.push({
@@ -1007,11 +1012,8 @@
     }
 
     function getPollingInterval() {
-      // KMB/LWB ETA data is updated about once per minute.
-      // Keep the normal refresh aligned with the source, but refresh faster
-      // while an arrival is imminent.
-      const hasImminent = [...document.querySelectorAll('.eta-primary.urgent, .eta-primary.due')].length > 0;
-      return hasImminent ? 20000 : 60000;
+      // Keep the dashboard refresh at 20 seconds as requested.
+      return 20000;
     }
 
     function scheduleNextEtaPoll() {
@@ -1127,8 +1129,7 @@
           provider,
           savedRoute.stopId,
           savedRoute.route,
-          normalizeServiceType(savedRoute.serviceType),
-          normalizeDirection(savedRoute.dir)
+          savedRoute.dest
         ].join('|');
 
         if (seen.has(key)) return;
@@ -1289,12 +1290,12 @@
       const serviceType = normalizeServiceType(item.serviceType);
       const dir = normalizeDirection(item.dir);
 
+      // Route display/grouping identity intentionally remains:
+      // provider + stopId + route + destination only.
       const key = [
         provider,
         stopId,
         item.route,
-        dir,
-        serviceType,
         destination
       ].join('|');
 
