@@ -69,6 +69,7 @@
       height: 24px;
       vertical-align: middle;
       display: inline-block;
+      object-fit: contain;
     }
 
     .badge-warning {
@@ -600,7 +601,7 @@
       if (weatherData.iconUrl || weatherData.tempStr) {
         let tempHtml = '';
         if (weatherData.iconUrl) {
-          tempHtml += `<img src="${weatherData.iconUrl}" class="weather-icon" alt="weather" /> `;
+          tempHtml += `<img src="${weatherData.iconUrl}" class="weather-icon" alt="weather" referrerpolicy="no-referrer" onerror="this.onerror=null;this.style.display='none';" /> `;
         }
         if (weatherData.tempStr) {
           tempHtml += weatherData.tempStr;
