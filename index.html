@@ -219,6 +219,46 @@
       flex: 1;
     }
 
+
+    .destination-wrap {
+      min-width: 0;
+      overflow: hidden;
+      flex: 1;
+    }
+
+    .route-meta {
+      font-size: 0.68rem;
+      color: var(--subtext);
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .eta-remark {
+      font-size: 0.68rem;
+      color: var(--warning);
+      padding: 0 12px 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      margin-top: -2px;
+      padding-top: 4px;
+    }
+
+    .eta-card:has(.eta-remark) {
+      height: auto;
+      min-height: 52px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      row-gap: 0;
+    }
+
+    .eta-card:has(.eta-remark) .eta-remark {
+      grid-column: 1 / -1;
+    }
+
     .route-badge {
       color: #fff;
       font-size: 1.2rem;
@@ -346,13 +386,37 @@
   </div>
 
   <script>
+    /*
+      HK Bus Dashboard — API/data-layer enhancement
+      Implemented:
+      3) Route-specific ETA API for saved routes / route searches
+      4) Rich route DB with operator, direction, service type and sequence
+      5) Direction + service type aware grouping/filtering
+      6) ETA remarks + generated timestamp
+      7) Provider abstraction for KMB/LWB (both are served by the KMB/LWB API;
+         the returned `co` field identifies the operator)
+    */
+
     const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
-    const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db';
+    const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db.v2';
     const ROUTE_DB_TTL = 86400000;
-    const PROVIDERS = [
-      { id: 'kmb', label: 'KMB', api: 'https://data.etabus.gov.hk/v1/transport/kmb' },
-      { id: 'lwb', label: 'LWB', api: 'https://data.etabus.gov.hk/v1/transport/kmb' }
-    ];
+    const ETA_CACHE_TTL = 15000;
+    const REQUEST_CONCURRENCY = 6;
+
+    const PROVIDERS = {
+      kmb: {
+        id: 'kmb',
+        code: 'KMB',
+        label: 'KMB',
+        api: 'https://data.etabus.gov.hk/v1/transport/kmb'
+      },
+      lwb: {
+        id: 'lwb',
+        code: 'LWB',
+        label: 'LWB',
+        api: 'https://data.etabus.gov.hk/v1/transport/kmb'
+      }
+    };
 
     let allStops = [];
     let stopMetaMap = {};
@@ -364,6 +428,9 @@
     let currentMode = 'daily';
     let etaPollTimer = null;
     let savedRoutes = [];
+    let etaCache = new Map();
+    let requestQueue = [];
+    let activeRequests = 0;
 
     function debounce(func, delay = 300) {
       let timer;
@@ -373,9 +440,18 @@
       };
     }
 
-    function getProviderApiBase(providerId) {
-      const provider = PROVIDERS.find(p => p.id === providerId) || PROVIDERS[0];
-      return provider.api;
+    function getProvider(providerId = 'kmb') {
+      return PROVIDERS[providerId] || PROVIDERS.kmb;
+    }
+
+    function normalizeProvider(value) {
+      const code = String(value || '').toUpperCase();
+      if (code === 'LWB') return 'lwb';
+      return 'kmb';
+    }
+
+    function getProviderApiBase(providerId = 'kmb') {
+      return getProvider(providerId).api;
     }
 
     function updateClock() {
@@ -386,17 +462,21 @@
     setInterval(updateClock, 1000);
     updateClock();
 
-    function updateLastUpdated(providerId = 'kmb') {
+    function updateLastUpdated(providerIds = ['kmb']) {
+      const ids = Array.isArray(providerIds) ? providerIds : [providerIds];
+      const labels = [...new Set(ids.map(normalizeProvider).map(id => getProvider(id).label))];
       const now = new Date();
       const timeText = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      const providerLabel = (providerId || 'kmb').toUpperCase();
-      document.getElementById('last-updated').textContent = `${providerLabel} 更新 ${timeText}`;
+      document.getElementById('last-updated').textContent =
+        `${labels.join(' + ')} 更新 ${timeText}`;
     }
 
     function getCompanyColours(providerIds) {
       const companyMap = { kmb: '#E31E25', lwb: '#2A8F9C' };
       const list = Array.isArray(providerIds) ? providerIds : [providerIds || 'kmb'];
-      const normalized = list.filter(Boolean).map(id => companyMap[id] || companyMap[id.toLowerCase?.() || id] || companyMap.kmb);
+      const normalized = list
+        .filter(Boolean)
+        .map(id => companyMap[normalizeProvider(id)] || companyMap.kmb);
       if (normalized.length === 1) return normalized[0];
       if (normalized.length >= 2) {
         return `linear-gradient(90deg, ${normalized[0]} 0 50%, ${normalized[1]} 50% 100%)`;
@@ -404,33 +484,111 @@
       return companyMap.kmb;
     }
 
+    async function fetchJson(url, options = {}) {
+      const response = await fetch(url, {
+        ...options,
+        cache: 'no-store'
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    }
+
+    function extractData(json) {
+      if (!json) return [];
+      if (Array.isArray(json)) return json;
+      return Array.isArray(json.data) ? json.data : [];
+    }
+
+    function extractGeneratedTimestamp(json) {
+      return json?.generated_timestamp || '';
+    }
+
+    function normalizeServiceType(value) {
+      const n = parseInt(value, 10);
+      return Number.isFinite(n) ? n : 1;
+    }
+
+    function normalizeDirection(value) {
+      const v = String(value || '').toUpperCase();
+      return v || '';
+    }
+
+    function directionLabel(dir) {
+      const d = normalizeDirection(dir);
+      if (d === 'O') return '出';
+      if (d === 'I') return '入';
+      return d || '';
+    }
+
+    function formatDataAge(timestamp) {
+      if (!timestamp) return '';
+      const t = new Date(timestamp).getTime();
+      if (!Number.isFinite(t)) return '';
+      const seconds = Math.max(0, Math.round((Date.now() - t) / 1000));
+      if (seconds < 60) return `${seconds}秒前`;
+      return `${Math.round(seconds / 60)}分鐘前`;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function getDistanceKm(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1 * Math.PI / 180) *
+        Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLon / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
     async function getOrFetchRouteDB() {
       if (routeDb) return routeDb;
+
       try {
         const cached = localStorage.getItem(ROUTE_DB_KEY);
         if (cached) {
           const { timestamp, data } = JSON.parse(cached);
-          if (Date.now() - timestamp < ROUTE_DB_TTL) {
+          if (Date.now() - timestamp < ROUTE_DB_TTL && data) {
             routeDb = data;
             return routeDb;
           }
         }
-      } catch (e) { /* ignore cache read error */ }
+      } catch (e) {
+        /* Ignore malformed/stale cache. */
+      }
 
       try {
-        const res = await fetch(`${getProviderApiBase('kmb')}/route-stop`);
-        if (!res.ok) return {};
-        const json = await res.json();
-        const list = Array.isArray(json.data) ? json.data : [];
+        const json = await fetchJson(`${getProviderApiBase('kmb')}/route-stop`);
+        const list = extractData(json);
 
         const db = {};
         list.forEach(item => {
-          const r = item.route.toUpperCase();
-          if (!db[r]) db[r] = [];
-          db[r].push({
+          if (!item?.route || !item?.stop) return;
+
+          const route = String(item.route).toUpperCase();
+          const provider = normalizeProvider(item.co);
+          const serviceType = normalizeServiceType(item.service_type);
+          const direction = normalizeDirection(item.bound || item.dir);
+
+          if (!db[route]) db[route] = [];
+
+          db[route].push({
+            route,
             stopId: item.stop,
-            seq: parseInt(item.seq, 10),
-            bound: item.bound
+            seq: parseInt(item.seq, 10) || 0,
+            bound: direction,
+            dir: direction,
+            serviceType,
+            provider,
+            providerCode: getProvider(provider).code
           });
         });
 
@@ -448,7 +606,14 @@
     function loadSavedRoutes() {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
-        savedRoutes = raw ? JSON.parse(raw) : [];
+        const parsed = raw ? JSON.parse(raw) : [];
+        savedRoutes = Array.isArray(parsed)
+          ? parsed.map(item => ({
+              ...item,
+              provider: normalizeProvider(item.provider),
+              serviceType: normalizeServiceType(item.serviceType)
+            }))
+          : [];
       } catch (e) {
         savedRoutes = [];
       }
@@ -461,31 +626,88 @@
     function buildStopMetaMap() {
       stopMetaMap = {};
       allStops.forEach(stop => {
-        if (stop && stop.stop) {
+        if (stop?.stop) {
           stopMetaMap[stop.stop] = stop.name_tc || stop.name_en || stop.stop;
         }
       });
     }
 
-    function getSavedRouteKey(route, dest, stopId, provider = 'kmb') {
-      return `${provider}|${route}|${dest}|${stopId}`;
+    function getSavedRouteKey(route, dest, stopId, provider = 'kmb', serviceType = 1, dir = '') {
+      return [
+        normalizeProvider(provider),
+        String(route),
+        String(dest),
+        String(stopId),
+        normalizeServiceType(serviceType),
+        normalizeDirection(dir)
+      ].join('|');
     }
 
     function getSavedRouteKeys() {
-      return new Set(savedRoutes.map(item => getSavedRouteKey(item.route, item.dest, item.stopId, item.provider || 'kmb')));
+      return new Set(savedRoutes.map(item =>
+        getSavedRouteKey(
+          item.route,
+          item.dest,
+          item.stopId,
+          item.provider,
+          item.serviceType,
+          item.dir
+        )
+      ));
     }
 
-    function isSavedRoute(route, dest, stopId, provider = 'kmb') {
-      const key = getSavedRouteKey(route, dest, stopId, provider);
-      return savedRoutes.some(item => getSavedRouteKey(item.route, item.dest, item.stopId, item.provider || 'kmb') === key);
+    function isSavedRoute(route, dest, stopId, provider = 'kmb', serviceType = 1, dir = '') {
+      const key = getSavedRouteKey(route, dest, stopId, provider, serviceType, dir);
+      return savedRoutes.some(item =>
+        getSavedRouteKey(
+          item.route,
+          item.dest,
+          item.stopId,
+          item.provider,
+          item.serviceType,
+          item.dir
+        ) === key
+      );
     }
 
-    function addSavedRoute(route, dest, stopId, provider = 'kmb') {
-      const key = getSavedRouteKey(route, dest, stopId, provider);
+    function addSavedRoute(route, dest, stopId, provider = 'kmb', serviceType = 1, dir = '') {
       if (!route || !dest || !stopId) return;
-      if (isSavedRoute(route, dest, stopId, provider)) return;
+
+      const normalizedProvider = normalizeProvider(provider);
+      const normalizedServiceType = normalizeServiceType(serviceType);
+      const normalizedDir = normalizeDirection(dir);
+
+      if (isSavedRoute(
+        route,
+        dest,
+        stopId,
+        normalizedProvider,
+        normalizedServiceType,
+        normalizedDir
+      )) return;
+
       const stopName = stopMetaMap[stopId] || '此站';
-      savedRoutes.push({ key, route, dest, stopId, provider, stopName, label: `${route} ${dest}` });
+      const key = getSavedRouteKey(
+        route,
+        dest,
+        stopId,
+        normalizedProvider,
+        normalizedServiceType,
+        normalizedDir
+      );
+
+      savedRoutes.push({
+        key,
+        route: String(route),
+        dest: String(dest),
+        stopId,
+        provider: normalizedProvider,
+        serviceType: normalizedServiceType,
+        dir: normalizedDir,
+        stopName,
+        label: `${route} ${dest}`
+      });
+
       saveSavedRoutes();
     }
 
@@ -496,14 +718,16 @@
 
     async function fetchWeather() {
       try {
-        const res = await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=tc');
-        const data = await res.json();
+        const data = await fetchJson(
+          'https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=tc'
+        );
         currentTemp = `${data.temperature.data[0].value}°C`;
       } catch (e) {
         currentTemp = '';
       }
       updateMetaText();
     }
+
     fetchWeather();
     setInterval(fetchWeather, 600000);
 
@@ -514,25 +738,15 @@
       document.getElementById('meta-text').textContent = parts.join(' • ');
     }
 
-    function getDistanceKm(lat1, lon1, lat2, lon2) {
-      const R = 6371;
-      const dLat = (lat2 - lat1) * Math.PI / 180;
-      const dLon = (lon2 - lon1) * Math.PI / 180;
-      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-                Math.sin(dLon / 2) * Math.sin(dLon / 2);
-      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    }
-
     function updateSearchVisibility() {
       const searchWrap = document.getElementById('toolbar-search');
       const searchInput = document.getElementById('nearby-search');
       if (!searchWrap || !searchInput) return;
+
       const shouldShow = currentMode === 'nearby';
       searchWrap.classList.toggle('hidden', !shouldShow);
-      if (!shouldShow) {
-        searchInput.value = '';
-      }
+
+      if (!shouldShow) searchInput.value = '';
     }
 
     function attachModeHandlers() {
@@ -542,21 +756,31 @@
           if (selectedMode === currentMode) return;
 
           currentMode = selectedMode;
-          document.querySelectorAll('.mode-button').forEach(b => b.classList.toggle('active', b.dataset.mode === currentMode));
+
+          document.querySelectorAll('.mode-button').forEach(b =>
+            b.classList.toggle('active', b.dataset.mode === currentMode)
+          );
+
           updateSearchVisibility();
 
-          try {
-            const etaContainerEl = document.getElementById('eta-container');
-            if (etaContainerEl) etaContainerEl.classList.toggle('daily-columns', currentMode === 'daily');
-          } catch (e) { /* ignore */ }
+          const etaContainerEl = document.getElementById('eta-container');
+          if (etaContainerEl) {
+            etaContainerEl.classList.toggle('daily-columns', currentMode === 'daily');
+          }
 
           if (currentMode === 'daily') {
             if (savedRoutes.length > 0) {
-              activeStopIds = [...new Set(savedRoutes.map(item => ({ stopId: item.stopId, provider: item.provider || 'kmb' })).filter(Boolean))];
+              activeStopIds = [...new Set(
+                savedRoutes.map(item => ({
+                  stopId: item.stopId,
+                  provider: item.provider || 'kmb'
+                }))
+              )];
               updateMetaText('已儲存站點');
               startEtaLoop();
             } else {
               activeStopIds = [];
+              stopEtaLoop();
               document.getElementById('eta-container').innerHTML = '';
               updateMetaText('已儲存站點');
             }
@@ -567,9 +791,11 @@
       });
 
       const searchInput = document.getElementById('nearby-search');
+
       if (searchInput) {
-        searchInput.addEventListener('input', debounce(async (event) => {
+        searchInput.addEventListener('input', debounce(async event => {
           if (currentMode !== 'nearby') return;
+
           const value = event.target.value.trim().toUpperCase();
 
           if (!value) {
@@ -582,12 +808,28 @@
           let targetStops = [];
 
           if (db[value]) {
-            targetStops = db[value].map(s => ({ stopId: s.stopId, provider: 'kmb' }));
+            targetStops = db[value].map(s => ({
+              stopId: s.stopId,
+              provider: s.provider || 'kmb'
+            }));
           } else {
             const matchingRoutes = Object.keys(db).filter(r => r.includes(value));
-            const stopSet = new Set();
-            matchingRoutes.forEach(r => db[r].forEach(s => stopSet.add(s.stopId)));
-            targetStops = Array.from(stopSet).slice(0, 80).map(stopId => ({ stopId, provider: 'kmb' }));
+            const seen = new Set();
+
+            matchingRoutes.forEach(route => {
+              db[route].forEach(s => {
+                const key = `${s.provider || 'kmb'}|${s.stopId}`;
+                if (!seen.has(key)) {
+                  seen.add(key);
+                  targetStops.push({
+                    stopId: s.stopId,
+                    provider: s.provider || 'kmb'
+                  });
+                }
+              });
+            });
+
+            targetStops = targetStops.slice(0, 80);
           }
 
           if (targetStops.length === 0) {
@@ -601,16 +843,20 @@
         }, 300));
       }
 
-      document.addEventListener('click', (event) => {
+      document.addEventListener('click', event => {
         const target = event.target.closest('[data-action]');
         if (!target) return;
 
         if (target.dataset.action === 'save-route') {
-          const route = target.dataset.route;
-          const dest = target.dataset.dest;
-          const stopId = target.dataset.stop;
-          const provider = target.dataset.provider || 'kmb';
-          addSavedRoute(route, dest, stopId, provider);
+          addSavedRoute(
+            target.dataset.route,
+            target.dataset.dest,
+            target.dataset.stop,
+            target.dataset.provider || 'kmb',
+            target.dataset.serviceType || 1,
+            target.dataset.dir || ''
+          );
+
           target.dataset.action = 'remove-saved-route';
           target.textContent = '★';
           target.classList.add('saved');
@@ -618,29 +864,29 @@
         }
 
         if (target.dataset.action === 'remove-saved-route') {
-          const route = target.dataset.route;
-          const dest = target.dataset.dest;
-          const stopId = target.dataset.stop;
-          const provider = target.dataset.provider || 'kmb';
-          removeSavedRoute(getSavedRouteKey(route, dest, stopId, provider));
+          removeSavedRoute(target.dataset.key);
           target.dataset.action = 'save-route';
           target.textContent = '☆';
           target.classList.remove('saved');
-          return;
         }
       });
     }
 
     function requestLocation() {
       if (!('geolocation' in navigator)) return;
+
       navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-          if (activeStopIds.length > 0) {
-            fetchEtas();
-          }
+        pos => {
+          userLocation = {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude
+          };
+
+          if (activeStopIds.length > 0) fetchEtas();
         },
-        (err) => { /* fallback to distance Infinity */ },
+        () => {
+          /* Keep distance as Infinity if permission is denied. */
+        },
         { enableHighAccuracy: true, timeout: 10000 }
       );
     }
@@ -649,10 +895,10 @@
       loadSavedRoutes();
       attachModeHandlers();
 
-      try {
-        const etaContainerEl = document.getElementById('eta-container');
-        if (etaContainerEl) etaContainerEl.classList.toggle('daily-columns', currentMode === 'daily');
-      } catch (e) { /* ignore */ }
+      const etaContainerEl = document.getElementById('eta-container');
+      if (etaContainerEl) {
+        etaContainerEl.classList.toggle('daily-columns', currentMode === 'daily');
+      }
 
       await initStops();
       getOrFetchRouteDB();
@@ -660,7 +906,13 @@
 
       if (currentMode === 'daily') {
         if (savedRoutes.length > 0) {
-          activeStopIds = [...new Set(savedRoutes.map(item => ({ stopId: item.stopId, provider: item.provider || 'kmb' })).filter(Boolean))];
+          activeStopIds = [...new Set(
+            savedRoutes.map(item => ({
+              stopId: item.stopId,
+              provider: item.provider || 'kmb'
+            }))
+          )];
+
           updateMetaText('已儲存站點');
           startEtaLoop();
           return;
@@ -677,11 +929,11 @@
 
     async function fetchKmbStops() {
       try {
-        const res = await fetch(`${getProviderApiBase('kmb')}/stop`);
-        if (!res.ok) return [];
-        const json = await res.json();
-        const items = Array.isArray(json) ? json : Array.isArray(json.data) ? json.data : [];
-        return items.map(stop => ({ ...stop, provider: 'kmb' }));
+        const json = await fetchJson(`${getProviderApiBase('kmb')}/stop`);
+        return extractData(json).map(stop => ({
+          ...stop,
+          provider: normalizeProvider(stop.co)
+        }));
       } catch (error) {
         return [];
       }
@@ -693,32 +945,43 @@
     }
 
     async function initNearbyStops() {
-      if (allStops.length === 0) {
-        await initStops();
-      }
+      if (allStops.length === 0) await initStops();
 
       if (!('geolocation' in navigator)) {
         showError('不支援定位功能。');
         return;
       }
 
-      navigator.geolocation.getCurrentPosition(onLocationSuccess, onLocationError, {
-        enableHighAccuracy: true,
-        timeout: 10000
-      });
+      navigator.geolocation.getCurrentPosition(
+        onLocationSuccess,
+        onLocationError,
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
     }
 
     function onLocationSuccess(position) {
       const userLat = position.coords.latitude;
       const userLong = position.coords.longitude;
-      userLocation = { lat: userLat, lng: userLong };
+
+      userLocation = {
+        lat: userLat,
+        lng: userLong
+      };
 
       const nearbyStops = allStops.filter(stop => {
-        const dist = getDistanceKm(userLat, userLong, parseFloat(stop.lat), parseFloat(stop.long));
+        const lat = parseFloat(stop.lat);
+        const lng = parseFloat(stop.long);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+
+        const dist = getDistanceKm(userLat, userLong, lat, lng);
         return dist <= 0.3;
       });
 
-      nearbyStopIds = nearbyStops.map(stop => ({ stopId: stop.stop, provider: stop.provider || 'kmb' }));
+      nearbyStopIds = nearbyStops.map(stop => ({
+        stopId: stop.stop,
+        provider: stop.provider || 'kmb'
+      }));
+
       activeStopIds = nearbyStopIds.slice();
 
       if (activeStopIds.length === 0) {
@@ -743,21 +1006,146 @@
       }
     }
 
-    function startEtaLoop() {
+    function getPollingInterval() {
+      // KMB/LWB ETA data is updated about once per minute.
+      // Keep the normal refresh aligned with the source, but refresh faster
+      // while an arrival is imminent.
+      const hasImminent = [...document.querySelectorAll('.eta-primary.urgent, .eta-primary.due')].length > 0;
+      return hasImminent ? 20000 : 60000;
+    }
+
+    function scheduleNextEtaPoll() {
       stopEtaLoop();
-      fetchEtas();
-      etaPollTimer = setInterval(fetchEtas, 20000);
+
+      if (!activeStopIds.length) return;
+
+      const interval = getPollingInterval();
+      etaPollTimer = setTimeout(async () => {
+        await fetchEtas();
+        scheduleNextEtaPoll();
+      }, interval);
+    }
+
+    async function startEtaLoop() {
+      stopEtaLoop();
+      await fetchEtas();
+      scheduleNextEtaPoll();
+    }
+
+    function enqueueRequest(task) {
+      return new Promise((resolve, reject) => {
+        requestQueue.push({ task, resolve, reject });
+        pumpRequestQueue();
+      });
+    }
+
+    function pumpRequestQueue() {
+      while (activeRequests < REQUEST_CONCURRENCY && requestQueue.length) {
+        const item = requestQueue.shift();
+        activeRequests++;
+
+        Promise.resolve()
+          .then(item.task)
+          .then(item.resolve)
+          .catch(item.reject)
+          .finally(() => {
+            activeRequests--;
+            pumpRequestQueue();
+          });
+      }
+    }
+
+    async function fetchWithCache(url) {
+      const cached = etaCache.get(url);
+
+      if (cached && Date.now() - cached.timestamp < ETA_CACHE_TTL) {
+        return cached.json;
+      }
+
+      const json = await enqueueRequest(() => fetchJson(url));
+
+      etaCache.set(url, {
+        timestamp: Date.now(),
+        json
+      });
+
+      return json;
     }
 
     async function fetchKmbStopEta(stopId) {
+      const url = `${getProviderApiBase('kmb')}/stop-eta/${encodeURIComponent(stopId)}`;
+
       try {
-        const res = await fetch(`${getProviderApiBase('kmb')}/stop-eta/${stopId}`);
-        if (!res.ok) return [];
-        const json = await res.json();
-        return Array.isArray(json) ? json : Array.isArray(json.data) ? json.data : [];
+        return await fetchWithCache(url);
       } catch (error) {
-        return [];
+        return { data: [] };
       }
+    }
+
+    async function fetchKmbRouteEta(stopId, route, serviceType = 1) {
+      const safeRoute = encodeURIComponent(route);
+      const safeServiceType = encodeURIComponent(normalizeServiceType(serviceType));
+      const url =
+        `${getProviderApiBase('kmb')}/eta/${encodeURIComponent(stopId)}/${safeRoute}/${safeServiceType}`;
+
+      try {
+        return await fetchWithCache(url);
+      } catch (error) {
+        return { data: [] };
+      }
+    }
+
+    function normalizeEtaItem(item, fallback = {}) {
+      return {
+        co: item?.co || fallback.co || getProvider(fallback.provider).code,
+        route: String(item?.route ?? fallback.route ?? ''),
+        dir: normalizeDirection(item?.dir ?? fallback.dir),
+        serviceType: normalizeServiceType(item?.service_type ?? fallback.serviceType),
+        seq: parseInt(item?.seq ?? fallback.seq, 10) || 0,
+        stop: item?.stop || fallback.stopId,
+        destination:
+          item?.dest_tc ||
+          item?.dest_en ||
+          item?.dest ||
+          fallback.dest ||
+          '未知',
+        eta: item?.eta || '',
+        etaSeq: item?.eta_seq ?? null,
+        remark: item?.rmk_tc || item?.rmk || item?.rmk_en || '',
+        generatedTimestamp: fallback.generatedTimestamp || '',
+        provider: normalizeProvider(item?.co || fallback.provider)
+      };
+    }
+
+    function buildDailyTasks() {
+      const tasks = [];
+      const seen = new Set();
+
+      savedRoutes.forEach(savedRoute => {
+        const provider = normalizeProvider(savedRoute.provider);
+        const key = [
+          provider,
+          savedRoute.stopId,
+          savedRoute.route,
+          normalizeServiceType(savedRoute.serviceType),
+          normalizeDirection(savedRoute.dir)
+        ].join('|');
+
+        if (seen.has(key)) return;
+        seen.add(key);
+
+        tasks.push({
+          mode: 'specific',
+          provider,
+          stopId: savedRoute.stopId,
+          route: savedRoute.route,
+          serviceType: normalizeServiceType(savedRoute.serviceType),
+          dir: normalizeDirection(savedRoute.dir),
+          dest: savedRoute.dest
+        });
+      });
+
+      return tasks;
     }
 
     async function fetchEtas() {
@@ -765,120 +1153,213 @@
 
       const routeMap = {};
       const now = new Date();
-      const promises = [];
-      const seenPairs = new Set();
+      const generatedTimestamps = new Set();
+      const searchInput = document.getElementById('nearby-search');
+      const searchQuery =
+        currentMode === 'nearby' && searchInput
+          ? searchInput.value.trim().toUpperCase()
+          : '';
 
       if (currentMode === 'daily' && savedRoutes.length > 0) {
-        for (const savedRoute of savedRoutes) {
-          const provider = savedRoute.provider || 'kmb';
-          const stopId = savedRoute.stopId;
-          const route = savedRoute.route;
-          const pairKey = `${provider}|${stopId}|${route}`;
-          if (seenPairs.has(pairKey)) continue;
-          seenPairs.add(pairKey);
+        // Daily mode uses the route-specific ETA endpoint.
+        const tasks = buildDailyTasks();
 
-          promises.push((async () => {
-            const itemsAll = await fetchKmbStopEta(stopId);
-            const items = Array.isArray(itemsAll) ? itemsAll.filter(it => String(it.route) === String(route)) : [];
-            return { stopId, provider, items };
-          })());
-        }
+        const responses = await Promise.all(
+          tasks.map(async task => {
+            try {
+              const json = await fetchKmbRouteEta(
+                task.stopId,
+                task.route,
+                task.serviceType
+              );
+              return { task, json, items: extractData(json) };
+            } catch (error) {
+              return { task, json: null, items: [] };
+            }
+          })
+        );
+
+        responses.forEach(({ task, json, items }) => {
+          if (json?.generated_timestamp) {
+            generatedTimestamps.add(json.generated_timestamp);
+          }
+
+          const savedMatches = savedRoutes.filter(saved =>
+            saved.stopId === task.stopId &&
+            normalizeProvider(saved.provider) === task.provider &&
+            String(saved.route).toUpperCase() === String(task.route).toUpperCase() &&
+            normalizeServiceType(saved.serviceType) === task.serviceType
+          );
+
+          items.forEach(rawItem => {
+            const item = normalizeEtaItem(rawItem, {
+              provider: task.provider,
+              stopId: task.stopId,
+              route: task.route,
+              serviceType: task.serviceType,
+              dir: task.dir,
+              dest: task.dest,
+              generatedTimestamp: json?.generated_timestamp || ''
+            });
+
+            if (item.provider !== task.provider) return;
+            if (item.route.toUpperCase() !== String(task.route).toUpperCase()) return;
+            if (task.dir && item.dir && item.dir !== task.dir) return;
+
+            const savedMatch = savedMatches.find(saved =>
+              saved.dir ? saved.dir === item.dir : true
+            );
+
+            if (!savedMatch) return;
+
+            addEtaRecord(routeMap, item, now);
+          });
+        });
       } else {
-        promises.push(...activeStopIds.map(async ({ stopId, provider } = {}) => {
-          const providerId = provider || 'kmb';
-          const items = await fetchKmbStopEta(stopId);
-          return { stopId, provider: providerId, items };
-        }));
+        // Nearby mode without a route query uses Stop-ETA, which is the
+        // appropriate all-routes endpoint for a physical bus stop.
+        const stopTasks = [...new Map(
+          activeStopIds.map(item => [
+            `${normalizeProvider(item.provider)}|${item.stopId}`,
+            item
+          ])
+        ).values()];
+
+        const responses = await Promise.all(
+          stopTasks.map(async task => {
+            try {
+              const json = await fetchKmbStopEta(task.stopId);
+              return { task, json, items: extractData(json) };
+            } catch (error) {
+              return { task, json: null, items: [] };
+            }
+          })
+        );
+
+        responses.forEach(({ task, json, items }) => {
+          if (json?.generated_timestamp) {
+            generatedTimestamps.add(json.generated_timestamp);
+          }
+
+          items.forEach(rawItem => {
+            const item = normalizeEtaItem(rawItem, {
+              provider: task.provider,
+              stopId: task.stopId,
+              generatedTimestamp: json?.generated_timestamp || ''
+            });
+
+            if (item.provider !== task.provider) return;
+            if (searchQuery &&
+                !item.route.toUpperCase().includes(searchQuery)) return;
+
+            addEtaRecord(routeMap, item, now);
+          });
+        });
       }
 
-      const stopResponses = await Promise.allSettled(promises);
-      const resolvedResponses = stopResponses.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
-
-      resolvedResponses.forEach(({ stopId, provider, items }) => {
-        let stopLabel = stopMetaMap[stopId];
-
-        if (!stopLabel && savedRoutes.length > 0) {
-          const savedMatch = savedRoutes.find(s => s.stopId === stopId);
-          if (savedMatch && savedMatch.stopName && savedMatch.stopName !== '此站') {
-            stopLabel = savedMatch.stopName;
-          }
-        }
-
-        if (!stopLabel) {
-          stopLabel = `站點 (${stopId})`;
-        }
-
-        const stopInfo = allStops.find(stop => stop && stop.stop === stopId);
-        const stopDistance = userLocation && stopInfo
-          ? getDistanceKm(userLocation.lat, userLocation.lng, parseFloat(stopInfo.lat), parseFloat(stopInfo.long))
-          : Number.POSITIVE_INFINITY;
-
-        items.forEach(item => {
-          if (!item || !item.route) return;
-
-          const destination = item.dest_tc || item.dest_en || '未知';
-          const routeKey = getSavedRouteKey(item.route, destination, stopId, provider || 'kmb');
-          const dailySavedRouteKeys = currentMode === 'daily' && savedRoutes.length > 0 ? getSavedRouteKeys() : null;
-          if (dailySavedRouteKeys && !dailySavedRouteKeys.has(routeKey)) return;
-
-          const key = `${provider || 'kmb'}-${stopId}-${item.route}-${destination}`;
-
-          if (!routeMap[key]) {
-            routeMap[key] = {
-              route: item.route,
-              dest: destination,
-              stopId: stopId,
-              provider: provider || 'kmb',
-              stopName: stopLabel,
-              stopDistance: stopDistance,
-              etas: []
-            };
-          }
-
-          if (item.eta && item.eta.trim() !== '') {
-            const etaTime = new Date(item.eta);
-            const diffMins = Math.round((etaTime - now) / 60000);
-            if (diffMins >= 0) {
-              routeMap[key].etas.push(diffMins);
-            }
-          }
-        });
-      });
-
       const groupedList = Object.values(routeMap).map(r => {
-        r.etas.sort((a, b) => a - b);
+        r.etas.sort((a, b) => a.minutes - b.minutes);
         return r;
       });
 
-      renderEtas(groupedList);
-      updateLastUpdated('kmb');
+      renderEtas(groupedList, generatedTimestamps);
+      updateLastUpdated(
+        [...new Set(groupedList.map(item => item.provider))]
+      );
     }
 
-    function renderEtas(routes) {
+    function addEtaRecord(routeMap, item, now) {
+      if (!item.route || !item.stop) return;
+
+      const stopId = item.stop;
+      const stopLabel = stopMetaMap[stopId] || '此站';
+      const stopInfo = allStops.find(stop => stop?.stop === stopId);
+
+      const stopDistance = userLocation && stopInfo
+        ? getDistanceKm(
+            userLocation.lat,
+            userLocation.lng,
+            parseFloat(stopInfo.lat),
+            parseFloat(stopInfo.long)
+          )
+        : Number.POSITIVE_INFINITY;
+
+      const destination = item.destination;
+      const provider = item.provider;
+      const serviceType = normalizeServiceType(item.serviceType);
+      const dir = normalizeDirection(item.dir);
+
+      const key = [
+        provider,
+        stopId,
+        item.route,
+        dir,
+        serviceType,
+        destination
+      ].join('|');
+
+      if (!routeMap[key]) {
+        routeMap[key] = {
+          route: item.route,
+          dest: destination,
+          stopId,
+          provider,
+          serviceType,
+          dir,
+          stopName: stopLabel,
+          stopDistance,
+          remark: item.remark || '',
+          generatedTimestamp: item.generatedTimestamp || '',
+          etas: []
+        };
+      } else if (item.remark && !routeMap[key].remark) {
+        routeMap[key].remark = item.remark;
+      }
+
+      if (item.eta && String(item.eta).trim() !== '') {
+        const etaTime = new Date(item.eta);
+        const diffMins = Math.round((etaTime - now) / 60000);
+
+        if (diffMins >= 0 && diffMins <= 180) {
+          routeMap[key].etas.push({
+            minutes: diffMins,
+            timestamp: item.eta,
+            etaSeq: item.etaSeq
+          });
+        }
+      }
+    }
+
+    function renderEtas(routes, generatedTimestamps = new Set()) {
       const container = document.getElementById('eta-container');
       const searchInput = document.getElementById('nearby-search');
-      const searchQuery = (currentMode === 'nearby' && searchInput)
-        ? searchInput.value.trim().toUpperCase()
-        : '';
 
-      // Filter for search: If exact match exists, show ONLY exact match route
+      const searchQuery =
+        currentMode === 'nearby' && searchInput
+          ? searchInput.value.trim().toUpperCase()
+          : '';
+
       if (searchQuery) {
-        const hasExactMatch = routes.some(r => r.route.toUpperCase() === searchQuery);
-        if (hasExactMatch) {
-          routes = routes.filter(r => r.route.toUpperCase() === searchQuery);
-        } else {
-          routes = routes.filter(r => r.route.toUpperCase().includes(searchQuery));
-        }
+        const hasExactMatch = routes.some(
+          r => r.route.toUpperCase() === searchQuery
+        );
+
+        routes = hasExactMatch
+          ? routes.filter(r => r.route.toUpperCase() === searchQuery)
+          : routes.filter(r => r.route.toUpperCase().includes(searchQuery));
       }
 
       if (routes.length === 0) {
-        container.innerHTML = `<div class="status-msg">${searchQuery ? '沒有符合搜尋條件的巴士。' : '沒有即將到達的巴士。'}</div>`;
+        container.innerHTML =
+          `<div class="status-msg">${searchQuery ? '沒有符合搜尋條件的巴士。' : '沒有即將到達的巴士。'}</div>`;
         return;
       }
 
       const stopsMap = new Map();
+
       routes.forEach(r => {
         const stopId = r.stopId || 'unknown';
+
         if (!stopsMap.has(stopId)) {
           stopsMap.set(stopId, {
             stopId,
@@ -887,105 +1368,198 @@
             items: []
           });
         }
+
         stopsMap.get(stopId).items.push(r);
       });
 
-      const isExactMatch = (routeStr) => searchQuery && routeStr.toUpperCase() === searchQuery;
+      const isExactMatch = routeStr =>
+        searchQuery && routeStr.toUpperCase() === searchQuery;
 
       const sortedStops = [...stopsMap.values()].sort((a, b) => {
         const distA = Number.isFinite(a.stopDistance) ? a.stopDistance : Infinity;
         const distB = Number.isFinite(b.stopDistance) ? b.stopDistance : Infinity;
 
-        if (currentMode === 'daily') {
-          if (distA !== distB) return distA - distB;
+        if (currentMode === 'nearby' && searchQuery) {
+          const exactA = a.items.some(item => isExactMatch(item.route));
+          const exactB = b.items.some(item => isExactMatch(item.route));
 
+          if (exactA !== exactB) return exactA ? -1 : 1;
+        }
+
+        if (distA !== distB) return distA - distB;
+
+        if (currentMode === 'daily') {
           const indexA = savedRoutes.findIndex(item => item.stopId === a.stopId);
           const indexB = savedRoutes.findIndex(item => item.stopId === b.stopId);
-          return (indexA !== -1 ? indexA : 999) - (indexB !== -1 ? indexB : 999);
-        } else {
-          if (searchQuery) {
-            const hasExactA = a.items.some(item => isExactMatch(item.route));
-            const hasExactB = b.items.some(item => isExactMatch(item.route));
-            if (hasExactA !== hasExactB) return hasExactA ? -1 : 1;
-          }
-
-          if (distA !== distB) return distA - distB;
-
-          return a.stopName.localeCompare(b.stopName, 'zh-HK');
+          return (indexA !== -1 ? indexA : 999) -
+                 (indexB !== -1 ? indexB : 999);
         }
+
+        return a.stopName.localeCompare(b.stopName, 'zh-HK');
       });
 
-      container.innerHTML = sortedStops.map(({ stopId, stopName, stopDistance, items }) => {
-        const stopDistanceText = Number.isFinite(stopDistance)
-          ? `${Math.round(stopDistance * 1000)}m`
-          : '站點';
+      container.innerHTML = sortedStops.map(
+        ({ stopId, stopName, stopDistance, items }) => {
+          const stopDistanceText = Number.isFinite(stopDistance)
+            ? `${Math.round(stopDistance * 1000)}m`
+            : '站點';
 
-        items.sort((a, b) => {
-          if (currentMode === 'nearby' && searchQuery) {
-            const exactA = isExactMatch(a.route);
-            const exactB = isExactMatch(b.route);
-            if (exactA !== exactB) return exactA ? -1 : 1;
-          }
+          items.sort((a, b) => {
+            if (currentMode === 'nearby' && searchQuery) {
+              const exactA = isExactMatch(a.route);
+              const exactB = isExactMatch(b.route);
+              if (exactA !== exactB) return exactA ? -1 : 1;
+            }
 
-          return a.route.localeCompare(b.route, undefined, { numeric: true, sensitivity: 'base' });
-        });
+            const etaA = a.etas[0]?.minutes ?? 9999;
+            const etaB = b.etas[0]?.minutes ?? 9999;
 
-        const cardMarkup = items.map(r => {
-          const firstEta = r.etas[0];
-          const nextEtas = r.etas.slice(1, 3).reverse().join(' | ');
+            if (etaA !== etaB) return etaA - etaB;
 
-          let timeClass = 'safe';
-          let displayTime = `${firstEta}<span class="unit">分</span>`;
+            return a.route.localeCompare(
+              b.route,
+              undefined,
+              { numeric: true, sensitivity: 'base' }
+            );
+          });
 
-          if (r.etas.length === 0) {
-            timeClass = 'muted';
-            displayTime = '暫無';
-          } else if (firstEta === 0) {
-            timeClass = 'due';
-            displayTime = '到站';
-          } else if (firstEta <= 3) {
-            timeClass = 'urgent';
-          } else if (firstEta <= 7) {
-            timeClass = 'warning';
-          }
+          const cardMarkup = items.map(r => {
+            const firstEta = r.etas[0]?.minutes;
+            const nextEtas = r.etas
+              .slice(1, 3)
+              .map(eta => eta.minutes)
+              .reverse()
+              .join(' | ');
 
-          const provider = r.provider || 'kmb';
-          const isSaved = isSavedRoute(r.route, r.dest, stopId, provider);
-          const action = isSaved ? 'remove-saved-route' : 'save-route';
-          const starIcon = isSaved ? '★' : '☆';
-          const savedClass = isSaved ? 'saved' : '';
+            let timeClass = 'safe';
+            let displayTime = firstEta != null
+              ? `${firstEta}<span class="unit">分</span>`
+              : '暫無';
+
+            if (firstEta == null) {
+              timeClass = 'muted';
+            } else if (firstEta === 0) {
+              timeClass = 'due';
+              displayTime = '到站';
+            } else if (firstEta <= 3) {
+              timeClass = 'urgent';
+            } else if (firstEta <= 7) {
+              timeClass = 'warning';
+            }
+
+            const provider = r.provider || 'kmb';
+            const isSaved = isSavedRoute(
+              r.route,
+              r.dest,
+              stopId,
+              provider,
+              r.serviceType,
+              r.dir
+            );
+
+            const action = isSaved
+              ? 'remove-saved-route'
+              : 'save-route';
+
+            const starIcon = isSaved ? '★' : '☆';
+            const savedClass = isSaved ? 'saved' : '';
+            const key = getSavedRouteKey(
+              r.route,
+              r.dest,
+              stopId,
+              provider,
+              r.serviceType,
+              r.dir
+            );
+
+            const directionText = directionLabel(r.dir);
+            const serviceText = r.serviceType ? `S${r.serviceType}` : '';
+            const metaText = [directionText, serviceText]
+              .filter(Boolean)
+              .join(' · ');
+
+            const remarkMarkup = r.remark
+              ? `<div class="eta-remark" title="${escapeHtml(r.remark)}">${escapeHtml(r.remark)}</div>`
+              : '';
+
+            return `
+              <div class="eta-card">
+                <div class="route-info">
+                  <div class="route-badge"
+                       style="background:${getCompanyColours(provider)};">
+                    ${escapeHtml(r.route)}
+                  </div>
+                  <div class="destination-wrap">
+                    <div class="destination">${escapeHtml(r.dest)}</div>
+                    ${metaText
+                      ? `<div class="route-meta">${escapeHtml(metaText)}</div>`
+                      : ''}
+                  </div>
+                </div>
+
+                <div class="eta-times">
+                  ${nextEtas
+                    ? `<div class="eta-secondary">${nextEtas}</div>`
+                    : ''}
+                  <div class="eta-primary ${timeClass}">
+                    ${displayTime}
+                  </div>
+                  <button
+                    class="save-route-btn ${savedClass}"
+                    data-action="${action}"
+                    data-key="${escapeHtml(key)}"
+                    data-route="${escapeHtml(r.route)}"
+                    data-dest="${escapeHtml(r.dest)}"
+                    data-stop="${escapeHtml(stopId)}"
+                    data-provider="${escapeHtml(provider)}"
+                    data-service-type="${escapeHtml(r.serviceType)}"
+                    data-dir="${escapeHtml(r.dir)}"
+                    title="${isSaved ? '取消儲存' : '儲存路線'}">
+                    ${starIcon}
+                  </button>
+                </div>
+
+                ${remarkMarkup}
+              </div>
+            `;
+          }).join('');
+
+          const timestampText = [...generatedTimestamps][0]
+            ? `資料 ${formatDataAge([...generatedTimestamps][0])}`
+            : '';
 
           return `
-            <div class="eta-card">
-              <div class="route-info">
-                <div class="route-badge" style="background: ${getCompanyColours(provider)};">${r.route}</div>
-                <div class="destination">${r.dest}</div>
+            <div class="stop-group">
+              <div class="stop-header">
+                <div class="stop-header-title">${escapeHtml(stopName)}</div>
+                <div class="stop-header-distance">
+                  ${escapeHtml(stopDistanceText)}
+                  ${timestampText
+                    ? ` · ${escapeHtml(timestampText)}`
+                    : ''}
+                </div>
               </div>
-              <div class="eta-times">
-                ${nextEtas ? `<div class="eta-secondary">${nextEtas}</div>` : ''}
-                <div class="eta-primary ${timeClass}">${displayTime}</div>
-                <button class="save-route-btn ${savedClass}" data-action="${action}" data-route="${r.route}" data-dest="${r.dest}" data-stop="${stopId}" data-provider="${provider}">${starIcon}</button>
-              </div>
+              <div class="stop-card-list">${cardMarkup}</div>
             </div>
           `;
-        }).join('');
-
-        return `
-          <div class="stop-group">
-            <div class="stop-header">
-              <div class="stop-header-title">${stopName}</div>
-              <div class="stop-header-distance">${stopDistanceText}</div>
-            </div>
-            <div class="stop-card-list">${cardMarkup}</div>
-          </div>
-        `;
-      }).join('');
+        }
+      ).join('');
     }
 
     function showError(msg) {
-      document.getElementById('eta-container').innerHTML = `<div class="status-msg">${msg}</div>`;
+      document.getElementById('eta-container').innerHTML =
+        `<div class="status-msg">${escapeHtml(msg)}</div>`;
       updateMetaText('錯誤');
     }
+
+    // Pause network polling while the tab is hidden.
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        stopEtaLoop();
+      } else if (activeStopIds.length) {
+        startEtaLoop();
+      }
+    });
 
     updateSearchVisibility();
     initDashboard();
