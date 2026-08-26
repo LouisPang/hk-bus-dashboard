@@ -424,8 +424,9 @@
 
   <div class="toolbar">
     <div id="mode-switch">
-      <button class="mode-button active" data-mode="daily">每日站點</button>
-      <button class="mode-button" data-mode="nearby">附近即時</button>
+      <button class="mode-button active" data-mode="nearby">附近即時</button>
+      <button class="mode-button" data-mode="daily">我的路線</button>
+      <button class="mode-button" data-mode="ctb-debug">CTB Debug</button>
     </div>
     <div style="display:flex;align-items:center;gap:8px;">
       <div id="last-updated">KMB/LWB 更新 --:--</div><div id="ctb-updated">CTB 更新 --:--:--</div>
@@ -440,6 +441,21 @@
     <div class="status-msg">正在初始化儀表板...</div>
   </div>
 
+  <style>
+    .ctb-debug-panel { padding: 12px; }
+    .ctb-debug-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+    .ctb-debug-btn { border:0; border-radius:10px; padding:9px 12px; cursor:pointer; background:#0055B8; color:#fff; font-weight:700; }
+    .ctb-debug-btn.secondary { background:#eef3f8; color:#17324d; }
+    .ctb-debug-grid { display:grid; gap:8px; }
+    .ctb-debug-row { display:grid; grid-template-columns: 1fr auto auto; gap:10px; align-items:center; padding:10px 12px; border:1px solid #e6e9ed; border-radius:10px; background:#fff; }
+    .ctb-debug-name { font-weight:700; }
+    .ctb-debug-detail { font-size:12px; color:#6b7280; }
+    .ctb-ok { color:#16803a; font-weight:700; }
+    .ctb-fail { color:#c62828; font-weight:700; }
+    .ctb-pending { color:#8a6d1d; font-weight:700; }
+    .ctb-debug-note { margin:10px 0; color:#5f6368; font-size:12px; line-height:1.5; }
+    .ctb-debug-link { word-break:break-all; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:11px; color:#355; }
+  </style>
   <script>
     /*
       HK Bus Dashboard — API/data-layer enhancement
@@ -452,7 +468,7 @@
     */
 
     const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
-    const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db.v4';
+    const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db.v5';
     const ROUTE_DB_TTL = 86400000;
     const ETA_CACHE_TTL = 15000;
     const REQUEST_CONCURRENCY = 6;
@@ -486,13 +502,15 @@
     let nearbyStopIds = [];
     let currentTemp = '';
     let weatherState = { summary: '', forecast: '', outlook: '', psr: '', warning: '', updated: null };
-    let currentMode = 'daily';
+    let currentMode = 'nearby';
     let etaPollTimer = null;
     let savedRoutes = [];
     let etaCache = new Map();
     let requestQueue = [];
     let activeRequests = 0;
     let providerRefreshTimestamps = { kmb: null, lwb: null, ctb: null };
+    let ctbDebugState = {};
+    const CTB_DEBUG_SAMPLE = { route: '1', stopId: '002403', direction: 'inbound' };
 
     function debounce(func, delay = 300) {
       let timer;
@@ -1009,14 +1027,7 @@
       const forecast = String(flw?.forecastDesc || '');
       const outlook = String(flw?.outlook || '');
       const today = getTodayForecast(fnd);
-      const psr = String(today.PSR || '').trim();
-      const psrLabel = {
-        '低': '降雨機會低',
-        '中低': '降雨機會偏低',
-        '中': '降雨機會中',
-        '中高': '降雨機會偏高',
-        '高': '降雨機會高'
-      }[psr] || '';
+      const psr = String(today.PSR || '');
       const weatherText = `${forecast} ${outlook} ${String(today.forecastWeather || '')}`;
       const warnings = Array.isArray(warnsum?.details) ? warnsum.details : [];
       const warningActive = warnings.length > 0 || !!warnsum?.warning;
@@ -1064,7 +1075,7 @@
         advice,
         cls,
         psr,
-        summary: `${currentEmoji} ${Number.isFinite(temp) ? `${temp}°C` : '--°C'} · ${currentWeather}${psrLabel ? ` · ${psrLabel}` : ''}`,
+        summary: `${currentEmoji} ${Number.isFinite(temp) ? `${temp}°C` : '--°C'} · ${currentWeather}${psr ? ` · ${psr}% 降雨` : ''}`,
         detail: nearest?.station ? `天文台 · ${nearest.station}` : '天文台'
       };
     }
@@ -1138,6 +1149,89 @@
       if (!shouldShow) searchInput.value = '';
     }
 
+    const CTB_DEBUG_ENDPOINTS = [
+      { key:'company', label:'Company API', url:'https://rt.data.gov.hk/v2/transport/citybus/company/CTB' },
+      { key:'route', label:'Route API', url:'https://rt.data.gov.hk/v2/transport/citybus/route/CTB' },
+      { key:'routeStop', label:'Route-Stop API', url:'https://rt.data.gov.hk/v2/transport/citybus/route-stop/CTB/1/inbound' },
+      { key:'stop', label:'Stop API', url:'https://rt.data.gov.hk/v2/transport/citybus/stop/002403' },
+      { key:'eta', label:'ETA API', url:'https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/002403/1' }
+    ];
+
+    function ctbDebugStatusClass(status) {
+      if (status === 'OK') return 'ctb-ok';
+      if (status === 'FAIL') return 'ctb-fail';
+      return 'ctb-pending';
+    }
+
+    function renderCtbDebug() {
+      const container = document.getElementById('eta-container');
+      if (!container || currentMode !== 'ctb-debug') return;
+      const rows = CTB_DEBUG_ENDPOINTS.map(ep => {
+        const s = ctbDebugState[ep.key] || {};
+        const status = s.status || 'PENDING';
+        const last = s.lastSuccess ? formatClockTime(s.lastSuccess, true) : '--:--:--';
+        const detail = s.status === 'OK'
+          ? `${s.http || 200} · ${s.ms ?? '--'}ms · ${s.count ?? 0} records · 成功 ${last}`
+          : s.status === 'FAIL'
+            ? `${s.http ? 'HTTP '+s.http+' · ' : ''}${s.error || '請求失敗'} · 上次成功 ${last}`
+            : `尚未測試 · 上次成功 ${last}`;
+        return `<div class="ctb-debug-row">
+          <div><div class="ctb-debug-name">${escapeHtml(ep.label)}</div><div class="ctb-debug-detail">${escapeHtml(detail)}</div></div>
+          <div class="${ctbDebugStatusClass(status)}">${escapeHtml(status)}</div>
+          <div class="ctb-debug-detail">${escapeHtml(last)}</div>
+        </div>`;
+      }).join('');
+
+      const lastSuccess = providerRefreshTimestamps.ctb
+        ? formatClockTime(providerRefreshTimestamps.ctb, true)
+        : '--:--:--';
+
+      container.innerHTML = `<div class="ctb-debug-panel">
+        <div class="ctb-debug-actions">
+          <button class="ctb-debug-btn" id="ctb-test-all">測試全部 CTB API</button>
+          <button class="ctb-debug-btn secondary" id="ctb-test-eta">只測 ETA</button>
+        </div>
+        <div class="ctb-debug-note">測試鏈：Route 1 → inbound → stop 002403。CTB 的 Stop API 必須帶 6 位 stop ID；不再測試不存在的「全部站點」Stop endpoint。最後成功更新時間只在成功回應後更新。</div>
+        <div class="ctb-debug-grid">${rows}</div>
+        <div class="ctb-debug-note"><strong>CTB 最後成功更新：</strong> ${escapeHtml(lastSuccess)}</div>
+        <div class="ctb-debug-note"><strong>手動測試 URL：</strong><br>${CTB_DEBUG_ENDPOINTS.map(ep => `<a class="ctb-debug-link" href="${escapeHtml(ep.url)}" target="_blank" rel="noopener">${escapeHtml(ep.url)}</a>`).join('<br>')}</div>
+      </div>`;
+
+      document.getElementById('ctb-test-all')?.addEventListener('click', () => runCtbDebug(false));
+      document.getElementById('ctb-test-eta')?.addEventListener('click', () => runCtbDebug(true));
+    }
+
+    async function debugFetchEndpoint(ep) {
+      const started = performance.now();
+      try {
+        const response = await fetch(ep.url, { cache:'no-store' });
+        const text = await response.text();
+        let json = null;
+        try { json = JSON.parse(text); } catch (_) {}
+        const ms = Math.round(performance.now() - started);
+        if (!response.ok) throw new Error(`HTTP ${response.status}${text ? ' · '+text.slice(0,120) : ''}`);
+        const count = Array.isArray(json?.data) ? json.data.length : (json?.data ? 1 : 0);
+        const now = Date.now();
+        ctbDebugState[ep.key] = { status:'OK', http:response.status, ms, count, lastSuccess:now, generated:json?.generated_timestamp || '' };
+        // Only a successful live ETA response updates the CTB refresh timestamp.
+        if (ep.key === 'eta') markProviderRefresh('ctb');
+      } catch (error) {
+        const old = ctbDebugState[ep.key] || {};
+        ctbDebugState[ep.key] = { ...old, status:'FAIL', error:String(error.message || error), http: old.http || null };
+      }
+    }
+
+    async function runCtbDebug(etaOnly = false) {
+      if (currentMode !== 'ctb-debug') return;
+      const list = etaOnly ? CTB_DEBUG_ENDPOINTS.filter(ep => ep.key === 'eta') : CTB_DEBUG_ENDPOINTS;
+      list.forEach(ep => { ctbDebugState[ep.key] = { ...(ctbDebugState[ep.key] || {}), status:'PENDING' }; });
+      renderCtbDebug();
+      for (const ep of list) {
+        await debugFetchEndpoint(ep);
+        renderCtbDebug();
+      }
+    }
+
     function attachModeHandlers() {
       document.querySelectorAll('.mode-button').forEach(button => {
         button.addEventListener('click', async () => {
@@ -1155,6 +1249,12 @@
           const etaContainerEl = document.getElementById('eta-container');
           if (etaContainerEl) {
             etaContainerEl.classList.toggle('daily-columns', currentMode === 'daily');
+          }
+
+          if (currentMode === 'ctb-debug') {
+            stopEtaLoop();
+            renderCtbDebug();
+            return;
           }
 
           if (currentMode === 'daily') {
@@ -1309,16 +1409,11 @@
     }
 
     async function fetchCtbStops() {
-      try {
-        const json = await fetchJson('https://rt.data.gov.hk/v2/transport/citybus/stop');
-        return extractData(json).map(stop => ({
-          ...stop,
-          provider: 'ctb',
-          co: 'CTB',
-        }));
-      } catch (error) {
-        return [];
-      }
+      // IMPORTANT: CTB V2 Stop API is /stop/{stop_id}; there is no documented
+      // /stop endpoint returning the complete stop inventory. Calling the
+      // latter was the reason our previous CTB discovery failed. CTB nearby
+      // discovery will be added separately using a proper stop inventory source.
+      return [];
     }
 
     async function initStops() {
@@ -1328,6 +1423,45 @@
       ]);
       allStops = [...kmbStops, ...ctbStops];
       buildStopMetaMap();
+    }
+
+    async function buildCtbNearbyStopsFromRoutes() {
+      if (!userLocation) return [];
+      try {
+        const routeJson = await fetchWithCache('https://rt.data.gov.hk/v2/transport/citybus/route/CTB');
+        const routes = extractData(routeJson).slice(0, 120);
+        const candidates = new Map();
+
+        // Sample enough routes to find nearby stops without requesting the
+        // entire CTB network on every refresh. Route-specific discovery is
+        // lazy; ETA remains the real-time source.
+        for (const route of routes) {
+          const routeKey = String(route.route || '').toUpperCase();
+          if (!routeKey) continue;
+          const rows = await fetchCtbRouteStops(routeKey);
+          rows.forEach(row => {
+            if (!candidates.has(row.stopId)) candidates.set(row.stopId, row);
+          });
+          if (candidates.size >= 120) break;
+        }
+
+        const stopIds = [...candidates.keys()].slice(0, 120);
+        const details = await Promise.all(stopIds.map(async stopId => {
+          try {
+            const json = await fetchWithCache(`https://rt.data.gov.hk/v2/transport/citybus/stop/${encodeURIComponent(stopId)}`);
+            const item = extractData(json)[0] || json?.data;
+            if (!item) return null;
+            return {
+              stopId, provider: 'ctb', co: 'CTB',
+              name_tc: item.name_tc || item.name_en || '',
+              lat: parseFloat(item.lat), long: parseFloat(item.long)
+            };
+          } catch (e) { return null; }
+        }));
+        return details.filter(x => x && Number.isFinite(x.lat) && Number.isFinite(x.long));
+      } catch (e) {
+        return [];
+      }
     }
 
     async function initNearbyStops() {
@@ -1482,7 +1616,7 @@
       const safeStop = encodeURIComponent(String(stopId).padStart(6, '0'));
       const url = `https://rt.data.gov.hk/v1/transport/batch/stop-eta/CTB/${safeStop}?lang=zh-hant`;
       try {
-        const json = await fetchWithCache(url);
+        const json = await fetchJson(url);
         markProviderRefresh('ctb');
         return json;
       } catch (error) {
@@ -1495,7 +1629,7 @@
       const safeRoute = encodeURIComponent(String(route).toUpperCase());
       const url = `https://rt.data.gov.hk/v2/transport/citybus/eta/CTB/${safeStop}/${safeRoute}`;
       try {
-        const json = await fetchWithCache(url);
+        const json = await fetchJson(url);
         markProviderRefresh('ctb');
         return json;
       } catch (error) {
@@ -1989,7 +2123,7 @@
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         stopEtaLoop();
-      } else if (activeStopIds.length) {
+      } else if (activeStopIds.length && currentMode !== 'ctb-debug') {
         startEtaLoop();
       }
     });
@@ -1999,4 +2133,3 @@
   </script>
 </body>
 </html>
-
