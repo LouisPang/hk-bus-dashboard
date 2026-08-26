@@ -60,6 +60,40 @@
       margin-top: 4px;
     }
 
+
+    .weather-summary {
+      margin-top: 5px;
+      font-size: 0.95rem;
+      color: var(--text);
+      font-weight: 700;
+      line-height: 1.25;
+      white-space: nowrap;
+    }
+
+    .weather-commute {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 3px;
+      font-size: 0.86rem;
+      color: var(--text);
+      font-weight: 700;
+      line-height: 1.25;
+    }
+
+    .weather-commute .weather-icon {
+      font-size: 0.95rem;
+      flex-shrink: 0;
+    }
+
+    .weather-commute.warn { color: var(--warning); }
+    .weather-commute.alert { color: var(--urgent); }
+    .weather-commute.good { color: var(--safe); }
+
+    .weather-source {
+      display: none;
+    }
+
     #clock {
       font-size: 3.2rem;
       font-weight: 800;
@@ -380,7 +414,10 @@
   <header>
     <div class="title-group">
       <h1>即時巴士 ETA</h1>
-      <div class="meta-info" id="meta-text">定位中 • 正在載入天氣...</div>
+      <div class="meta-info" id="meta-text">定位中</div>
+      <div class="weather-summary" id="weather-summary">☁️ 天氣資料載入中</div>
+      <div class="weather-commute" id="weather-commute"><span class="weather-icon">·</span><span id="weather-advice">正在載入通勤建議...</span></div>
+      <div class="weather-source" id="weather-source">天文台</div>
     </div>
     <div id="clock">00:00</div>
   </header>
@@ -448,6 +485,7 @@
     let activeStopIds = [];
     let nearbyStopIds = [];
     let currentTemp = '';
+    let weatherState = { summary: '', forecast: '', outlook: '', psr: '', warning: '', updated: null };
     let currentMode = 'daily';
     let etaPollTimer = null;
     let savedRoutes = [];
@@ -851,14 +889,142 @@
       saveSavedRoutes();
     }
 
+    function getTodayForecast(fnd) {
+      const list = Array.isArray(fnd?.weatherForecast) ? fnd.weatherForecast : [];
+      const today = new Date();
+      const ymd = `${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`;
+      return list.find(x => String(x.forecastDate) === ymd) || list[0] || {};
+    }
+
+    function getHkoWeatherLabel(icon) {
+      const map = {
+        50:'天晴', 51:'間有陽光', 52:'短暫陽光', 53:'間有陽光有驟雨', 54:'短暫陽光有驟雨',
+        60:'多雲', 61:'密雲', 62:'微雨', 63:'有雨', 64:'大雨', 65:'雷暴',
+        76:'大致多雲', 77:'大致天晴', 80:'有風', 81:'乾燥', 82:'潮濕',
+        83:'有霧', 84:'有薄霧', 85:'有煙霞', 90:'炎熱', 91:'溫暖', 92:'清涼', 93:'寒冷'
+      };
+      return map[Number(icon)] || '天氣不明';
+    }
+
+    function getWeatherEmoji(icon) {
+      const n = Number(icon);
+      if (n === 65) return '⛈️';
+      if ([62,63,64].includes(n)) return '🌧️';
+      if ([53,54].includes(n)) return '🌦️';
+      if ([60,61,76].includes(n)) return '☁️';
+      if ([50,51,52,77].includes(n)) return '🌤️';
+      if ([90].includes(n)) return '🥵';
+      return '🌤️';
+    }
+
+    function commutePeriod() {
+      const h = new Date().getHours();
+      if (h >= 5 && h < 11) return '今早';
+      if (h >= 16 && h < 22) return '今晚';
+      if (h >= 11 && h < 16) return '午後';
+      return '現在';
+    }
+
+    function buildCommuteAdvice(rhr, flw, fnd, warnsum) {
+      const forecast = String(flw?.forecastDesc || '');
+      const outlook = String(flw?.outlook || '');
+      const today = getTodayForecast(fnd);
+      const psr = String(today.PSR || '');
+      const weatherText = `${forecast} ${outlook} ${String(today.forecastWeather || '')}`;
+      const warnings = Array.isArray(warnsum?.details) ? warnsum.details : [];
+      const warningActive = warnings.length > 0 || !!warnsum?.warning;
+      const temp = Number(rhr?.temperature?.data?.[0]?.value);
+      const humidity = Number(rhr?.humidity?.data?.[0]?.value);
+      const icon = Array.isArray(rhr?.icon) ? rhr.icon[0] : rhr?.icon;
+      const currentWeather = getHkoWeatherLabel(icon);
+      const currentEmoji = getWeatherEmoji(icon);
+      const period = commutePeriod();
+      const thunder = /雷暴|雷雨|雷電|thunderstorm|thunder/i.test(weatherText);
+      const rain = /雨|驟雨|大雨|暴雨|rain|shower/i.test(weatherText);
+      const hot = (Number.isFinite(temp) && temp >= 32) || /炎熱|酷熱|very hot|extremely hot/i.test(weatherText);
+      const psrHigh = /^(高|中高|High|Medium High)$/i.test(psr);
+      const psrMedium = /^(高|中高|中|High|Medium High|Medium)$/i.test(psr);
+
+      let advice = '✓ 天氣穩定，適合通勤';
+      let cls = 'good';
+      let adviceIcon = '✓';
+
+      if (warningActive) {
+        adviceIcon = '⚠️';
+        advice = '天氣警告生效，候車盡量選有遮蔽位置';
+        cls = 'alert';
+      } else if (thunder) {
+        adviceIcon = '⚡';
+        advice = `${period}有雷暴風險，候車盡量留在有蓋位置`;
+        cls = 'alert';
+      } else if (rain && (psrHigh || psrMedium)) {
+        adviceIcon = '☔';
+        advice = `${period}有雨機會，帶傘較穩`;
+        cls = 'warn';
+      } else if (rain) {
+        adviceIcon = '☔';
+        advice = `${period}有驟雨機會，帶傘較穩`;
+        cls = 'warn';
+      } else if (hot) {
+        adviceIcon = '🥵';
+        advice = '天氣炎熱，候車盡量避免長時間曝曬';
+        cls = 'warn';
+      }
+
+      return {
+        icon: adviceIcon,
+        advice,
+        cls,
+        psr,
+        summary: `${currentEmoji} ${Number.isFinite(temp) ? `${temp}°C` : '--°C'} · ${currentWeather}${Number.isFinite(humidity) ? ` · ${humidity}% 濕度` : ''}`,
+        detail: '天文台'
+      };
+    }
+
+    function renderWeatherAdvice(result) {
+      const wrap = document.getElementById('weather-commute');
+      const icon = wrap?.querySelector('.weather-icon');
+      const advice = document.getElementById('weather-advice');
+      const source = document.getElementById('weather-source');
+      const summary = document.getElementById('weather-summary');
+      if (!wrap || !icon || !advice || !source || !summary) return;
+      wrap.className = `weather-commute ${result.cls}`;
+      icon.textContent = result.icon;
+      advice.textContent = result.advice;
+      summary.textContent = result.summary;
+      source.textContent = result.detail || '天文台';
+    }
+
     async function fetchWeather() {
       try {
-        const data = await fetchJson(
-          'https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=tc'
-        );
-        currentTemp = `${data.temperature.data[0].value}°C`;
+        const base = 'https://data.weather.gov.hk/weatherAPI/opendata/weather.php';
+        const [rhr, flw, fnd, warnsum] = await Promise.all([
+          fetchJson(`${base}?dataType=rhrread&lang=tc`),
+          fetchJson(`${base}?dataType=flw&lang=tc`),
+          fetchJson(`${base}?dataType=fnd&lang=tc`),
+          fetchJson(`${base}?dataType=warnsum&lang=tc`)
+        ]);
+        const temp = rhr?.temperature?.data?.[0]?.value;
+        currentTemp = Number.isFinite(Number(temp)) ? `${temp}°C` : '';
+        weatherState.updated = new Date();
+        weatherState.forecast = flw?.forecastDesc || '';
+        weatherState.outlook = flw?.outlook || '';
+        const advice = buildCommuteAdvice(rhr, flw, fnd, warnsum);
+        weatherState.psr = advice.psr;
+        weatherState.summary = advice.summary;
+        renderWeatherAdvice(advice);
       } catch (e) {
         currentTemp = '';
+        const wrap = document.getElementById('weather-commute');
+        if (wrap) wrap.className = 'weather-commute';
+        const icon = wrap?.querySelector('.weather-icon');
+        if (icon) icon.textContent = '·';
+        const advice = document.getElementById('weather-advice');
+        if (advice) advice.textContent = '天氣資料暫時未能取得';
+        const summary = document.getElementById('weather-summary');
+        if (summary) summary.textContent = '☁️ 天氣資料暫時未能取得';
+        const source = document.getElementById('weather-source');
+        if (source) source.textContent = '天文台天氣資料';
       }
       updateMetaText();
     }
