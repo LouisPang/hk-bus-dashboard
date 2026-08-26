@@ -235,6 +235,13 @@
       text-overflow: ellipsis;
     }
 
+    .eta-time-stack {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      min-width: 0;
+    }
+
     .eta-remark {
       font-size: 0.68rem;
       color: var(--warning);
@@ -245,6 +252,17 @@
       border-top: 1px solid rgba(255, 255, 255, 0.05);
       margin-top: -2px;
       padding-top: 4px;
+    }
+
+    .eta-secondary-remark {
+      max-width: 180px;
+      font-size: 0.62rem;
+      line-height: 1.2;
+      color: var(--warning);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
     }
 
     .eta-card:has(.eta-remark) {
@@ -1166,6 +1184,17 @@
       }
     }
 
+    // KMB uses "原定班次" / "Scheduled Bus" as a normal status marker.
+    // It is useful in raw API data but is not actionable enough to occupy card space.
+    // Keep other remarks at ETA-record granularity so a remark belongs to the
+    // specific arrival it describes, rather than the whole route card.
+    function normalizeEtaRemark(remark) {
+      const text = String(remark || '').trim();
+      // Only show remarks that contain the Chinese character "慢".
+      // All other remarks, including "原定班次", are hidden.
+      return text.includes('慢') ? text : '';
+    }
+
     function normalizeEtaItem(item, fallback = {}) {
       return {
         co: item?.co || fallback.co || getProvider(fallback.provider).code,
@@ -1382,12 +1411,9 @@
           dir,
           stopName: stopLabel,
           stopDistance,
-          remark: item.remark || '',
           generatedTimestamp: item.generatedTimestamp || '',
           etas: []
         };
-      } else if (item.remark && !routeMap[key].remark) {
-        routeMap[key].remark = item.remark;
       }
 
       if (item.eta && String(item.eta).trim() !== '') {
@@ -1398,7 +1424,8 @@
           routeMap[key].etas.push({
             minutes: diffMins,
             timestamp: item.eta,
-            etaSeq: item.etaSeq
+            etaSeq: item.etaSeq,
+            remark: normalizeEtaRemark(item.remark)
           });
         }
       }
@@ -1501,9 +1528,19 @@
             const firstEta = r.etas[0]?.minutes;
             const nextEtas = r.etas
               .slice(1, 3)
-              .map(eta => eta.minutes)
+              .map(eta => `${eta.minutes}分`)
               .reverse()
               .join(' | ');
+
+            const primaryEtaRemark = normalizeEtaRemark(r.etas[0]?.remark);
+            const secondaryRemarks = r.etas
+              .slice(1, 3)
+              .map((eta, index) => ({
+                label: eta.minutes,
+                remark: normalizeEtaRemark(eta.remark),
+                ordinal: index + 2
+              }))
+              .filter(item => item.remark);
 
             let timeClass = 'safe';
             let displayTime = firstEta != null
@@ -1552,8 +1589,12 @@
               .filter(Boolean)
               .join(' · ');
 
-            const remarkMarkup = r.remark
-              ? `<div class="eta-remark" title="${escapeHtml(r.remark)}">${escapeHtml(r.remark)}</div>`
+            const remarkMarkup = primaryEtaRemark
+              ? `<div class="eta-remark" title="${escapeHtml(primaryEtaRemark)}">${escapeHtml(primaryEtaRemark)}</div>`
+              : '';
+
+            const secondaryRemarkMarkup = secondaryRemarks.length
+              ? `<div class="eta-secondary-remark" title="${escapeHtml(secondaryRemarks.map(x => `${x.label}分：${x.remark}`).join('；'))}">${escapeHtml(secondaryRemarks.map(x => `${x.label}分：${x.remark}`).join('；'))}</div>`
               : '';
 
             return `
@@ -1573,11 +1614,14 @@
                 </div>
 
                 <div class="eta-times">
-                  ${nextEtas
-                    ? `<div class="eta-secondary">${nextEtas}</div>`
-                    : ''}
-                  <div class="eta-primary ${timeClass}">
-                    ${displayTime}
+                  <div class="eta-time-stack">
+                    ${nextEtas
+                      ? `<div class="eta-secondary">${nextEtas}</div>`
+                      : ''}
+                    <div class="eta-primary ${timeClass}">
+                      ${displayTime}
+                    </div>
+                    ${secondaryRemarkMarkup}
                   </div>
                   <button
                     class="save-route-btn ${savedClass}"
