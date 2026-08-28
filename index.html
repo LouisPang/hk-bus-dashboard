@@ -2349,7 +2349,7 @@
     }
   }
 
-  async function fetchAndRenderRain() {
+async function fetchAndRenderRain() {
     const uEl = document.getElementById('rain-updated');
     logDebug('Fetching rain CSV forecast...');
 
@@ -2369,7 +2369,9 @@
       let endingTimeIdx = -1;
       let rainfallValIdx = -1;
       let updateTimeStr = '';
+      let headerRow = [];
 
+      // Find the header row and inspect column indices
       for (let i = 0; i < Math.min(10, rows.length); i++) {
         const row = rows[i];
         
@@ -2384,12 +2386,44 @@
         
         if (lIdx !== -1 && gIdx !== -1) {
           headerIdx = i;
+          headerRow = row;
           latIdx = lIdx;
           lngIdx = gIdx;
           endingTimeIdx = row.findIndex(c => c.includes('Ending Date and Time') || c.includes('結束時間') || c.includes('Ending'));
-          rainfallValIdx = row.findIndex(c => c.includes('Half-hourly Nowcast Accumulated Rainfall (mm)') || c.includes('Rainfall') || c.includes('降雨量'));
+          
+          // 1. Locate the rainfall column index
+          rainfallValIdx = headerRow.findIndex(c => 
+            String(c).includes('Half-hourly Nowcast Accumulated Rainfall (mm)') || 
+            String(c).includes('Rainfall') || 
+            String(c).includes('降雨量')
+          );
           break;
         }
+      }
+
+      // 2. Process and display debug table if rainfall column is checked
+      const dataRows = rows.slice(headerIdx + 1);
+      
+      if (rainfallValIdx === -1) {
+        console.error('Debug Error: Rainfall header column could not be found.');
+        console.log('Available Headers:', headerRow);
+      } else {
+        // Map row data into an array of objects for grid display
+        const rainfallGrid = dataRows.map((dataRow, index) => {
+          // Assuming Column 0 is Location/Station name; adjust index if needed
+          const location = dataRow[0] || `Row ${index + 1}`; 
+          const rainfallValue = dataRow[rainfallValIdx];
+
+          return {
+            'Row #': index + 1,
+            'Location / Station': location,
+            'Rainfall (mm)': rainfallValue !== undefined && rainfallValue !== '' ? rainfallValue : 'N/A'
+          };
+        });
+
+        // 3. Output as a clean, interactive grid table in the Debug console
+        console.log(`Debug Info: Found rainfall data at column index [${rainfallValIdx}]`);
+        console.table(rainfallGrid);
       }
 
       if (headerIdx === -1 || latIdx === -1 || lngIdx === -1) {
@@ -2409,8 +2443,8 @@
 
       const timeSeriesMap = new Map();
 
-      for (let i = headerIdx + 1; i < rows.length; i++) {
-        const row = rows[i];
+      for (let i = 0; i < dataRows.length; i++) {
+        const row = dataRows[i];
         if (row.length <= Math.max(latIdx, lngIdx)) continue;
 
         const lat = parseFloat(row[latIdx]);
@@ -2451,6 +2485,7 @@
           <b>Status:</b> Success<br>
           <b>CSV Raw Rows:</b> ${rows.length}<br>
           <b>Parsed Points:</b> ${rainParsedDataset.length}<br>
+          <b>Rainfall Col Index:</b> ${rainfallValIdx}<br>
           <b>Time Slots:</b> ${timeLabels.join(', ')}
         `;
       }
