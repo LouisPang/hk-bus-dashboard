@@ -2257,7 +2257,7 @@
           latIdx = lIdx;
           lngIdx = gIdx;
           endingTimeIdx = row.findIndex(c => c.includes('Ending Date and Time') || c.includes('結束時間') || c.includes('Ending'));
-          rainfallValIdx = row.findIndex(c => c.includes('Half-hourly Nowcast Accumulated Rainfall') || c.includes('Rainfall') || c.includes('降雨量'));
+          rainfallValIdx = row.findIndex(c => c.includes('Half-hourly Nowcast Accumulated Rainfall (mm)') || c.includes('Rainfall') || c.includes('降雨量'));
           break;
         }
       }
