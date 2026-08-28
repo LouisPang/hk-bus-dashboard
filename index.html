@@ -228,10 +228,10 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      height: 52px;
       min-height: 52px;
-      max-height: 52px;
+      height: auto;
       flex-shrink: 0;
+      flex-wrap: wrap;
     }
 
     .eta-card:last-child { border-bottom: none; }
@@ -258,15 +258,15 @@
     }
 
     .eta-remark {
+      width: 100%;
       font-size: 0.68rem;
       color: var(--warning);
-      padding: 0 12px 6px;
+      padding: 4px 0 0;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
       border-top: 1px solid rgba(255, 255, 255, 0.05);
-      margin-top: -2px;
-      padding-top: 4px;
+      margin-top: 4px;
     }
 
     .eta-secondary-remark {
@@ -279,16 +279,6 @@
       text-overflow: ellipsis;
       margin-top: 2px;
     }
-
-    .eta-card:has(.eta-remark) {
-      height: auto;
-      min-height: 52px;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      row-gap: 0;
-    }
-
-    .eta-card:has(.eta-remark) .eta-remark { grid-column: 1 / -1; }
 
     .route-badge {
       color: #fff;
@@ -394,16 +384,18 @@
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
   <style>
-#rain-map-panel {
-  flex-shrink: 0;
-  width: 100%;
-  aspect-ratio: 1.3 / 1; /* Automatically scales height to maintain aspect ratio */
-  margin-top: 10px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  overflow: hidden;
-  position: relative;
-}
+    #rain-map-panel {
+      flex-shrink: 0;
+      width: 100%;
+      height: 260px;
+      margin-top: 10px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+    }
     #rain-map-panel.hidden {
       display: none !important;
     }
@@ -422,7 +414,7 @@
     }
     #rain-map-header .title { color: var(--accent); white-space: nowrap; }
     #rain-map-header .meta { color: var(--subtext); font-weight: 600; font-size: .75rem; white-space: nowrap; }
-    #rain-map { flex: 1; width: 100%; background: #0a0a0a; z-index: 1; }
+    #rain-map { flex: 1; width: 100%; min-height: 150px; background: #0a0a0a; z-index: 1; }
     
     .playback-controller {
       display: flex;
@@ -2050,12 +2042,10 @@
       preferCanvas: true
     }).setView([22.3193, 114.1694], 11);
 
-// Fit bounds precisely to HK region
-const hkBounds = L.latLngBounds([22.15, 113.80], [22.55, 114.35]);
-rainMap.fitBounds(hkBounds);
+    const hkBounds = L.latLngBounds([22.15, 113.80], [22.55, 114.35]);
+    rainMap.fitBounds(hkBounds);
 
-// Force Leaflet to recalculate tile rendering after container resize
-rainMap.invalidateSize();
+    setTimeout(() => rainMap.invalidateSize(), 200);
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_2gm9_1_9b68fea67e86e6b53ba39bcd', {
       attribution: '&copy; OSM &copy; CARTO | Data: HKO / CSDI',
