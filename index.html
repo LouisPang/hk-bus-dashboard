@@ -1934,7 +1934,7 @@
     if(rainMap||typeof L==='undefined')return;
     const el=document.getElementById('rain-map');if(!el)return;
     rainMap=L.map('rain-map',{zoomControl:true,attributionControl:true,preferCanvas:true}).setView([22.3193,114.1694],11);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'&copy; OSM &copy; CARTO | 數據：香港天文台',subdomains:'abcd',maxZoom:18}).addTo(rainMap);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_2gm9_1_9b68fea67e86e6b53ba39bcd',{attribution:'&copy; OSM &copy; CARTO | 數據：香港天文台',subdomains:'abcd',maxZoom:18}).addTo(rainMap);
     rainLayer=L.layerGroup().addTo(rainMap);
   }
   function updateRainUserMarker(){
