@@ -435,7 +435,7 @@
     #rain-map-panel {
       flex-shrink: 0;
       width: 100%;
-      height: 260px;
+      height: 300px;
       margin-top: 10px;
       border: 1px solid var(--border);
       border-radius: 14px;
@@ -459,9 +459,23 @@
       flex-shrink: 0;
       z-index: 10;
       gap: 8px;
+      flex-wrap: wrap;
     }
     #rain-map-header .title { color: var(--accent); white-space: nowrap; }
     #rain-map-header .meta { color: var(--subtext); font-weight: 600; font-size: .75rem; white-space: nowrap; }
+    #rain-map-header .local-rain {
+      font-size: 0.78rem;
+      font-weight: 800;
+      white-space: nowrap;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+    }
+    #rain-map-header .local-rain.dry { color: var(--safe); }
+    #rain-map-header .local-rain.light { color: #7CFF7C; }
+    #rain-map-header .local-rain.moderate { color: var(--warning); }
+    #rain-map-header .local-rain.heavy { color: var(--urgent); }
+    #rain-map-header .local-rain.extreme { color: #C084FC; }
     #rain-map { flex: 1; width: 100%; min-height: 150px; background: #0a0a0a; z-index: 1; }
     
     .playback-controller {
@@ -493,7 +507,7 @@
       font-size: 0.8rem;
       color: var(--accent);
       font-weight: 700;
-      min-width: 110px;
+      min-width: 130px;
       text-align: center;
       white-space: nowrap;
     }
@@ -522,17 +536,20 @@
       bottom: 42px;
       left: 8px;
       z-index: 1000;
-      background: rgba(0,0,0,.75);
+      background: rgba(0,0,0,.78);
       border-radius: 8px;
-      padding: 4px 8px;
-      font-size: .65rem;
+      padding: 5px 8px;
+      font-size: .62rem;
       color: #ccc;
       display: flex;
-      gap: 6px;
+      gap: 5px;
       align-items: center;
       pointer-events: none;
+      flex-wrap: wrap;
+      max-width: 92%;
     }
-    #rain-map-legend .swatch { width: 12px; height: 10px; border-radius: 2px; display: inline-block; }
+    #rain-map-legend .swatch { width: 11px; height: 9px; border-radius: 2px; display: inline-block; }
+    #rain-map-legend .legend-label { opacity: 0.9; }
     .leaflet-container { background: #0a0a0a!important; font-family: inherit; }
     .leaflet-control-attribution { font-size: 9px!important; background: rgba(0,0,0,.5)!important; color: #888!important; }
     .leaflet-control-zoom a { background: #1a1a1a!important; color: #fff!important; border-color: #333!important; }
@@ -602,6 +619,7 @@
   <div id="rain-map-panel" class="hidden">
     <div id="rain-map-header">
       <div class="title">🌧️ 降雨熱力圖預報</div>
+      <div class="local-rain dry" id="rain-local-badge" title="你附近網格的半小時累計雨量">附近 -- mm</div>
       <div class="meta" id="rain-updated">載入中…</div>
     </div>
     <div id="rain-map"></div>
@@ -615,10 +633,11 @@
     </div>
 
     <div id="rain-map-legend">
-      <span class="swatch" style="background:#00FF00"></span>&gt;0.5
-      <span class="swatch" style="background:#FFA500"></span>&gt;5
-      <span class="swatch" style="background:#FF0000"></span>&gt;15
-      <span class="swatch" style="background:#800080"></span>&gt;30 mm/hr
+      <span class="swatch" style="background:#7CFF7C"></span><span class="legend-label">≥0.5</span>
+      <span class="swatch" style="background:#FFD700"></span><span class="legend-label">≥2.5</span>
+      <span class="swatch" style="background:#FFA500"></span><span class="legend-label">≥5</span>
+      <span class="swatch" style="background:#FF4500"></span><span class="legend-label">≥10</span>
+      <span class="swatch" style="background:#C084FC"></span><span class="legend-label">≥20 mm</span>
     </div>
   </div>
 
@@ -2157,6 +2176,10 @@
   let selectedTimeIdx = 0;
   let playbackTimer = null;
   let isPlaying = false;
+  let rainUpdateTimestamp = '';
+
+  // HK bounding box used for filtering + display (slightly padded)
+  const HK_BOUNDS = { minLat: 22.15, maxLat: 22.58, minLng: 113.83, maxLng: 114.44 };
 
   const HKO_RAINFALL_CSV_URL = 'https://tight-meadow-e6e3.pangshuntak12493.workers.dev/';
 
@@ -2176,8 +2199,8 @@
 
     setTimeout(() => rainMap.invalidateSize(), 200);
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_2gm9_1_9b68fea67e86e6b53ba39bcd', {
-      attribution: '&copy; OSM &copy; CARTO | Data: HKO / CSDI',
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OSM &copy; CARTO | Data: HKO',
       subdomains: 'abcd',
       maxZoom: 18
     }).addTo(rainMap);
@@ -2188,11 +2211,15 @@
   function updateRainUserMarker() {
     if (!rainMap || !userLocation) return;
     const ll = [userLocation.lat, userLocation.lng];
-    if (rainUserMarker) rainUserMarker.setLatLng(ll);
-    else rainUserMarker = L.circleMarker(ll, {
-      radius: 7, color: '#FFCC00', weight: 2, fillColor: '#FFCC00', fillOpacity: 0.9
-    }).addTo(rainMap).bindTooltip('你的位置');
+    if (rainUserMarker) {
+      rainUserMarker.setLatLng(ll);
+    } else {
+      rainUserMarker = L.circleMarker(ll, {
+        radius: 7, color: '#FFCC00', weight: 2, fillColor: '#FFCC00', fillOpacity: 0.9
+      }).addTo(rainMap).bindTooltip('你的位置');
+    }
     if (!rainMap.getBounds().contains(ll)) rainMap.panTo(ll);
+    updateLocalRainBadge();
   }
 
   function parseCSV(text) {
@@ -2234,11 +2261,65 @@
 
   function parseHKOTimeString(str) {
     if (!str) return '';
-    const match = str.match(/(\d{4})(\d{2})(\d{2})[-_]?(\d{2})(\d{2})/);
-    if (match) {
-      return `${match[4]}:${match[5]}`;
+    const match = String(str).match(/(\d{4})(\d{2})(\d{2})[-_]?(\d{2})(\d{2})/);
+    if (match) return `${match[4]}:${match[5]}`;
+    return String(str).slice(-5);
+  }
+
+  function formatTimeRangeLabel(endRaw, prevEndRaw) {
+    const end = parseHKOTimeString(endRaw);
+    if (!prevEndRaw) return end ? `至 ${end}` : endRaw;
+    const start = parseHKOTimeString(prevEndRaw);
+    if (start && end) return `${start}–${end}`;
+    return end || endRaw;
+  }
+
+  function rainIntensityClass(mm) {
+    if (mm >= 20) return 'extreme';
+    if (mm >= 10) return 'heavy';
+    if (mm >= 5) return 'moderate';
+    if (mm >= 0.5) return 'light';
+    return 'dry';
+  }
+
+  function findNearestRainValue(colIndex) {
+    if (!userLocation || !rainParsedDataset.length) return null;
+    let best = null;
+    let bestDist = Infinity;
+    for (const pt of rainParsedDataset) {
+      const d = getDistanceKm(userLocation.lat, userLocation.lng, pt.lat, pt.lng);
+      if (d < bestDist) {
+        bestDist = d;
+        best = pt;
+      }
     }
-    return str.slice(-5);
+    if (!best) return null;
+    return {
+      mm: best.values[colIndex] || 0,
+      distKm: bestDist,
+      lat: best.lat,
+      lng: best.lng
+    };
+  }
+
+  function updateLocalRainBadge() {
+    const badge = document.getElementById('rain-local-badge');
+    if (!badge) return;
+
+    const info = findNearestRainValue(selectedTimeIdx);
+    if (!info) {
+      badge.textContent = '附近 -- mm';
+      badge.className = 'local-rain dry';
+      badge.title = '尚未有位置或降雨資料';
+      return;
+    }
+
+    const mm = info.mm;
+    const cls = rainIntensityClass(mm);
+    const mmText = mm < 0.05 ? '0' : (mm < 10 ? mm.toFixed(1) : Math.round(mm).toString());
+    badge.textContent = `附近 ${mmText} mm`;
+    badge.className = `local-rain ${cls}`;
+    badge.title = `最近網格約 ${Math.round(info.distKm * 1000)} m · 半小時累計雨量 ${mm.toFixed(2)} mm`;
   }
 
   function renderHeatmapForColumn(colIndex) {
@@ -2247,8 +2328,10 @@
     const heatPoints = [];
     rainParsedDataset.forEach(row => {
       const val = row.values[colIndex] || 0;
-      if (val > 0.5) {
-        const intensity = Math.min(1.0, Math.max(0.1, val / 35.0));
+      // Show light rain too (≥0.3) so the map is more informative on light days
+      if (val >= 0.3) {
+        // Intensity curve tuned for HKO half-hourly mm scale
+        const intensity = Math.min(1.0, Math.max(0.08, Math.pow(val / 22, 0.85)));
         heatPoints.push([row.lat, row.lng, intensity]);
       }
     });
@@ -2257,19 +2340,22 @@
       rainHeatLayer.setLatLngs(heatPoints);
     } else if (typeof L.heatLayer === 'function') {
       rainHeatLayer = L.heatLayer(heatPoints, {
-        radius: 25,
-        blur: 14,
+        radius: 22,
+        blur: 16,
         maxZoom: 14,
+        minOpacity: 0.25,
         gradient: {
-          0.0: '#00FF00',
-          0.2: '#FFA500',
-          0.5: '#FF0000',
-          0.9: '#800080'
+          0.0: '#7CFF7C',
+          0.18: '#FFD700',
+          0.35: '#FFA500',
+          0.55: '#FF4500',
+          0.8: '#C084FC'
         }
       }).addTo(rainMap);
     }
 
     updatePlaybackUI();
+    updateLocalRainBadge();
   }
 
   function setupPlaybackControls() {
@@ -2323,7 +2409,7 @@
     playbackTimer = setInterval(() => {
       selectedTimeIdx = (selectedTimeIdx + 1) % rainTimeColumns.length;
       renderHeatmapForColumn(selectedTimeIdx);
-    }, 1200);
+    }, 1400);
   }
 
   function stopRainPlayback() {
@@ -2349,7 +2435,7 @@
     }
   }
 
-async function fetchAndRenderRain() {
+  async function fetchAndRenderRain() {
     const uEl = document.getElementById('rain-updated');
     logDebug('Fetching rain CSV forecast...');
 
@@ -2363,146 +2449,143 @@ async function fetchAndRenderRain() {
       const rows = parseCSV(csvText);
       if (rows.length < 2) throw new Error('Empty or invalid CSV structure');
 
-      let headerIdx = -1;
-      let latIdx = -1;
-      let lngIdx = -1;
-      let endingTimeIdx = -1;
-      let rainfallValIdx = -1;
-      let updateTimeStr = '';
-      let headerRow = [];
+      // Documented format (HKO):
+      // Col0 Updated, Col1 Ending, Col2 Lat, Col3 Lon, Col4 Rainfall(mm)
+      let headerIdx = 0;
+      const first = rows[0] || [];
+      const looksLikeHeader =
+        first.some(c => /lat/i.test(c)) &&
+        first.some(c => /lon|lng/i.test(c));
 
-      // Find the header row and inspect column indices
-      for (let i = 0; i < Math.min(10, rows.length); i++) {
-        const row = rows[i];
-        
-        row.forEach((cell, cellIdx) => {
-          if (cell.includes('Updated Date and Time')) {
-            updateTimeStr = row[cellIdx + 1] || cell.split(':')[1] || '';
+      if (looksLikeHeader) headerIdx = 0;
+      else {
+        for (let i = 0; i < Math.min(5, rows.length); i++) {
+          if (rows[i].some(c => /lat/i.test(c))) {
+            headerIdx = i;
+            break;
           }
-        });
-
-        const lIdx = row.findIndex(c => c.toLowerCase().includes('lat'));
-        const gIdx = row.findIndex(c => c.toLowerCase().includes('lon') || c.toLowerCase().includes('lng'));
-        
-        if (lIdx !== -1 && gIdx !== -1) {
-          headerIdx = i;
-          headerRow = row;
-          latIdx = lIdx;
-          lngIdx = gIdx;
-          endingTimeIdx = row.findIndex(c => c.includes('Ending Date and Time') || c.includes('結束時間') || c.includes('Ending'));
-          
-          // 1. Locate the rainfall column index
-          rainfallValIdx = headerRow.findIndex(c => 
-            String(c).includes('Half-hourly Nowcast Accumulated Rainfall (mm)') || 
-            String(c).includes('Rainfall') || 
-            String(c).includes('降雨量')
-          );
-          break;
         }
       }
 
-      // 2. Process and display debug table if rainfall column is checked
+      const headerRow = rows[headerIdx] || [];
+      let latIdx = headerRow.findIndex(c => /lat/i.test(c));
+      let lngIdx = headerRow.findIndex(c => /lon|lng/i.test(c));
+      let endingTimeIdx = headerRow.findIndex(c => /ending|結束/i.test(c));
+      let rainfallValIdx = headerRow.findIndex(c => /rainfall|降雨|rain/i.test(c));
+      let updatedIdx = headerRow.findIndex(c => /updated|更新/i.test(c));
+
+      // Hard fallback to documented column order if header detection fails
+      if (latIdx < 0 || lngIdx < 0) {
+        latIdx = 2;
+        lngIdx = 3;
+        endingTimeIdx = 1;
+        rainfallValIdx = 4;
+        updatedIdx = 0;
+      }
+      if (rainfallValIdx < 0) rainfallValIdx = 4;
+      if (endingTimeIdx < 0) endingTimeIdx = 1;
+
       const dataRows = rows.slice(headerIdx + 1);
-      
-      if (rainfallValIdx === -1) {
-        console.error('Debug Error: Rainfall header column could not be found.');
-        console.log('Available Headers:', headerRow);
-      } else {
-        // Map row data into an array of objects for grid display
-        const rainfallGrid = dataRows.map((dataRow, index) => {
-          // Assuming Column 0 is Location/Station name; adjust index if needed
-          const location = dataRow[0] || `Row ${index + 1}`; 
-          const rainfallValue = dataRow[rainfallValIdx];
 
-          return {
-            'Row #': index + 1,
-            'Location / Station': location,
-            'Rainfall (mm)': rainfallValue !== undefined && rainfallValue !== '' ? rainfallValue : 'N/A'
-          };
-        });
+      const endingOrder = [];
+      const endingSeen = new Set();
+      let updateTimeStr = '';
 
-        // 3. Output as a clean, interactive grid table in the Debug console
-        console.log(`Debug Info: Found rainfall data at column index [${rainfallValIdx}]`);
-        console.table(rainfallGrid);
+      if (dataRows[0] && dataRows[0][updatedIdx >= 0 ? updatedIdx : 0]) {
+        updateTimeStr = dataRows[0][updatedIdx >= 0 ? updatedIdx : 0];
       }
 
-      if (headerIdx === -1 || latIdx === -1 || lngIdx === -1) {
-        throw new Error('Coordinate or column headers missing in CSV');
+      for (const row of dataRows) {
+        if (row.length <= Math.max(latIdx, lngIdx, rainfallValIdx)) continue;
+        const endingRaw = row[endingTimeIdx] || '';
+        if (endingRaw && !endingSeen.has(endingRaw)) {
+          endingSeen.add(endingRaw);
+          endingOrder.push(endingRaw);
+        }
       }
 
-      const rawUpdate = updateTimeStr.trim();
+      const pointMap = new Map();
+      for (const row of dataRows) {
+        if (row.length <= Math.max(latIdx, lngIdx, rainfallValIdx)) continue;
+        const lat = parseFloat(row[latIdx]);
+        const lng = parseFloat(row[lngIdx]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
+        // Keep only HK-relevant grid points (performance + clarity)
+        if (
+          lat < HK_BOUNDS.minLat || lat > HK_BOUNDS.maxLat ||
+          lng < HK_BOUNDS.minLng || lng > HK_BOUNDS.maxLng
+        ) continue;
+
+        const endingRaw = row[endingTimeIdx] || '';
+        const tIdx = endingOrder.indexOf(endingRaw);
+        if (tIdx < 0) continue;
+
+        const rainfallValue = parseFloat(row[rainfallValIdx]) || 0;
+        const key = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+        if (!pointMap.has(key)) {
+          pointMap.set(key, {
+            lat,
+            lng,
+            values: new Array(endingOrder.length).fill(0)
+          });
+        }
+        pointMap.get(key).values[tIdx] = rainfallValue;
+      }
+
+      rainParsedDataset = Array.from(pointMap.values());
+
+      rainTimeColumns = endingOrder.map((endRaw, idx) => {
+        const prev = idx > 0 ? endingOrder[idx - 1] : null;
+        let label;
+        if (prev) {
+          label = formatTimeRangeLabel(endRaw, prev);
+        } else {
+          const end = parseHKOTimeString(endRaw);
+          const m = String(endRaw).match(/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/);
+          if (m) {
+            const d = new Date(
+              Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+              Number(m[4]), Number(m[5])
+            );
+            d.setMinutes(d.getMinutes() - 30);
+            const start = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            label = `${start}–${end}`;
+          } else {
+            label = end ? `至 ${end}` : endRaw;
+          }
+        }
+        return { indexInValList: idx, label, endRaw };
+      });
+
+      if (selectedTimeIdx < 0 || selectedTimeIdx >= rainTimeColumns.length) {
+        selectedTimeIdx = 0;
+      }
+
+      rainUpdateTimestamp = updateTimeStr;
       if (uEl) {
-        if (rawUpdate) {
-          const formattedRefresh = parseHKOTimeString(rawUpdate) || rawUpdate;
-          uEl.textContent = `更新 ${formattedRefresh}`;
+        if (updateTimeStr) {
+          uEl.textContent = `更新 ${parseHKOTimeString(updateTimeStr)}`;
         } else {
           const n = new Date();
           uEl.textContent = `更新 ${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`;
         }
       }
 
-      const timeSeriesMap = new Map();
+      const allVals = rainParsedDataset.flatMap(p => p.values);
+      const hkMax = allVals.length ? Math.max(...allVals) : 0;
+      const hkMin = allVals.length ? Math.min(...allVals) : 0;
+      logDebug(`Rain CSV OK: ${dataRows.length} rows → ${rainParsedDataset.length} HK points, ${rainTimeColumns.length} slots, max ${hkMax.toFixed(1)} mm`);
 
-      for (let i = 0; i < dataRows.length; i++) {
-        const row = dataRows[i];
-        if (row.length <= Math.max(latIdx, lngIdx)) continue;
-
-        const lat = parseFloat(row[latIdx]);
-        const lng = parseFloat(row[lngIdx]);
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-
-        const endingTimeRaw = endingTimeIdx !== -1 ? row[endingTimeIdx] : '預報';
-        const endingLabel = parseHKOTimeString(endingTimeRaw);
-        
-        const rainfallValue = rainfallValIdx !== -1 ? (parseFloat(row[rainfallValIdx]) || 0) : 0;
-
-        if (!timeSeriesMap.has(endingLabel)) {
-          timeSeriesMap.set(endingLabel, []);
-        }
-        timeSeriesMap.get(endingLabel).push({ lat, lng, value: rainfallValue });
-      }
-
-      const timeLabels = Array.from(timeSeriesMap.keys());
-      rainTimeColumns = timeLabels.map((label, idx) => ({ indexInValList: idx, label }));
-
-      rainParsedDataset = [];
-      const totalPoints = timeSeriesMap.get(timeLabels[0])?.length || 0;
-
-      for (let ptIdx = 0; ptIdx < totalPoints; ptIdx++) {
-        const firstPt = timeSeriesMap.get(timeLabels[0])[ptIdx];
-        const values = timeLabels.map(label => timeSeriesMap.get(label)[ptIdx]?.value || 0);
-        rainParsedDataset.push({ lat: firstPt.lat, lng: firstPt.lng, values });
-      }
-
-      if (selectedTimeIdx < 0 || selectedTimeIdx >= rainTimeColumns.length) {
-        selectedTimeIdx = 0;
-      }
-
-      logDebug(`Rain CSV parsed successfully: ${rows.length} rows, ${timeLabels.length} time frames.`);
-      const rainValues = rainParsedDataset.map(pt => pt.values[selectedTimeIdx] || 0);
-const minRainVal = rainValues.length > 0 ? Math.min(...rainValues) : 0;
-const maxRainVal = rainValues.length > 0 ? Math.max(...rainValues) : 0;
-      // Filter points that fall within Hong Kong's geographic boundaries
-const hkPoints = rainParsedDataset.filter(pt => 
-  pt.lat >= 22.15 && pt.lat <= 22.58 && 
-  pt.lng >= 113.83 && pt.lng <= 114.44
-);
-
-// Get all rainfall values only for stations inside Hong Kong
-const hkRainValues = hkPoints.flatMap(pt => pt.values);
-
-const hkMin = hkRainValues.length ? Math.min(...hkRainValues) : 0;
-const hkMax = hkRainValues.length ? Math.max(...hkRainValues) : 0;
       const debugRainEl = document.getElementById('debug-rain-info');
       if (debugRainEl) {
         debugRainEl.innerHTML = `
           <b>Status:</b> Success<br>
           <b>CSV Raw Rows:</b> ${rows.length}<br>
-          <b>Parsed Points:</b> ${rainParsedDataset.length}<br>
-          <b>Rainfall Col Index:</b> ${rainfallValIdx}<br>
-          <b>Rainfall Range:</b> ${minRainVal} mm - ${maxRainVal} mm<br>
-          <b>HK Rainfall Range:</b> ${hkMin} mm - ${hkMax} mm<br>
-          <b>Time Slots:</b> ${timeLabels.join(', ')}
+          <b>HK Grid Points:</b> ${rainParsedDataset.length}<br>
+          <b>Rainfall Col:</b> ${rainfallValIdx}<br>
+          <b>HK Rainfall Range:</b> ${hkMin.toFixed(2)} – ${hkMax.toFixed(2)} mm<br>
+          <b>Time Slots:</b> ${rainTimeColumns.map(t => t.label).join(', ')}
         `;
       }
 
@@ -2512,6 +2595,11 @@ const hkMax = hkRainValues.length ? Math.max(...hkRainValues) : 0;
       console.warn('Rain CSV parse error:', e);
       logDebug(`[ERROR] Rain CSV Error: ${e.message}`);
       if (uEl) uEl.textContent = '載入失敗';
+      const badge = document.getElementById('rain-local-badge');
+      if (badge) {
+        badge.textContent = '附近 -- mm';
+        badge.className = 'local-rain dry';
+      }
       const debugRainEl = document.getElementById('debug-rain-info');
       if (debugRainEl) debugRainEl.innerHTML = `<span style="color:#ef4444">Error loading CSV: ${e.message}</span>`;
     }
