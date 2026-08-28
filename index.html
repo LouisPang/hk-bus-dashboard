@@ -1913,8 +1913,7 @@
 
 
   let rainMap = null, rainGeoJsonLayer = null, rainUserMarker = null;
-  const HKO_RAINFALL_CSV_URL = 'https://data.gov.hk/tc-data/dataset/hk-hko-rss-gridded-rainfall-nowcast-in-hong-kong/resource/9a88473a-d33c-455b-8b10-0f8fe128531f';
-
+  const HKO_RAINFALL_CSV_URL = 'https://api.allorigins.win/raw?url=' + encodeURIComponent('https://data.gov.hk/tc-data/dataset/hk-hko-rss-gridded-rainfall-nowcast-in-hong-kong/resource/9a88473a-d33c-455b-8b10-0f8fe128531f');
   function getRainColor(val) {
     return val > 30 ? '#800080' : // Heavy Rain / Black Storm level (>30mm)
            val > 15 ? '#FF0000' : // Moderate-Heavy / Red Storm level (>15mm)
