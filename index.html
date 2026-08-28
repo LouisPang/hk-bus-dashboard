@@ -426,7 +426,6 @@
     #rain-map-header .meta { color: var(--subtext); font-weight: 600; font-size: .75rem; white-space: nowrap; }
     #rain-map { flex: 1; width: 100%; background: #0a0a0a; z-index: 1; }
     
-    /* Interactive Playback Controller CSS */
     .playback-controller {
       display: flex;
       align-items: center;
@@ -456,8 +455,9 @@
       font-size: 0.8rem;
       color: var(--accent);
       font-weight: 700;
-      min-width: 65px;
+      min-width: 110px;
       text-align: center;
+      white-space: nowrap;
     }
     .playback-slider {
       flex: 1;
@@ -541,7 +541,6 @@
     </div>
     <div id="rain-map"></div>
     
-    <!-- Intuitive Playback Controller replacing the dropdown -->
     <div class="playback-controller">
       <button class="playback-btn" id="play-prev-btn" title="上一個時段">⏮</button>
       <button class="playback-btn" id="play-toggle-btn" title="播放 / 暫停">▶</button>
@@ -559,7 +558,7 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+  <script src="https://unpkg.com/leaflet-heat@0.2.0/dist/leaflet-heat.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script>
   const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
@@ -1106,7 +1105,6 @@
     const rainPanel = document.getElementById('rain-map-panel');
     if (!rainPanel) return;
 
-    // Show rain map ONLY in daily mode, hide in nearby mode
     if (currentMode === 'daily') {
       rainPanel.classList.remove('hidden');
       if (rainMap) {
@@ -2078,6 +2076,52 @@
     if (!rainMap.getBounds().contains(ll)) rainMap.panTo(ll);
   }
 
+  function parseCSV(text) {
+    const lines = [];
+    let curLine = [];
+    let curToken = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      const nextChar = text[i + 1];
+
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          curToken += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        curLine.push(curToken.trim());
+        curToken = '';
+      } else if ((char === '\r' || char === '\n') && !inQuotes) {
+        if (char === '\r' && nextChar === '\n') i++;
+        curLine.push(curToken.trim());
+        if (curLine.some(cell => cell.length > 0)) lines.push(curLine);
+        curLine = [];
+        curToken = '';
+      } else {
+        curToken += char;
+      }
+    }
+    if (curToken || curLine.length) {
+      curLine.push(curToken.trim());
+      if (curLine.some(cell => cell.length > 0)) lines.push(curLine);
+    }
+    return lines;
+  }
+
+  function parseHKOTimeString(str) {
+    if (!str) return '';
+    const match = str.match(/(\d{4})(\d{2})(\d{2})[-_]?(\d{2})(\d{2})/);
+    if (match) {
+      return `${match[4]}:${match[5]}`;
+    }
+    return str.slice(-5);
+  }
+
   function renderHeatmapForColumn(colIndex) {
     if (!rainMap || !rainParsedDataset.length) return;
 
@@ -2196,37 +2240,84 @@
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const csvText = await response.text();
-      const lines = csvText.split(/\r?\n/).filter(line => line.trim().length > 0);
-      if (lines.length < 2) throw new Error('Empty or invalid CSV structure');
+      const rows = parseCSV(csvText);
+      if (rows.length < 2) throw new Error('Empty or invalid CSV structure');
 
-      const headers = lines[0].split(',').map(h => h.trim());
-      const latIdx = headers.findIndex(h => h.toLowerCase().includes('lat'));
-      const lngIdx = headers.findIndex(h => h.toLowerCase().includes('lon') || h.toLowerCase().includes('lng'));
+      let headerIdx = -1;
+      let latIdx = -1;
+      let lngIdx = -1;
+      let endingTimeIdx = -1;
+      let rainfallValIdx = -1;
+      let updateTimeStr = '';
 
-      if (latIdx === -1 || lngIdx === -1) throw new Error('Coordinate headers missing in CSV');
+      for (let i = 0; i < Math.min(10, rows.length); i++) {
+        const row = rows[i];
+        
+        row.forEach((cell, cellIdx) => {
+          if (cell.includes('Updated Date and Time')) {
+            updateTimeStr = row[cellIdx + 1] || cell.split(':')[1] || '';
+          }
+        });
 
-      const valIndices = [];
-      rainTimeColumns = [];
-
-      headers.forEach((h, idx) => {
-        if (idx !== latIdx && idx !== lngIdx) {
-          valIndices.push(idx);
-          const label = h.replace(/^rf_/i, '').replace(/min$/i, '分').replace(/^0+/, '');
-          rainTimeColumns.push({ indexInValList: valIndices.length - 1, label: label || '即時' });
+        const lIdx = row.findIndex(c => c.toLowerCase().includes('lat'));
+        const gIdx = row.findIndex(c => c.toLowerCase().includes('lon') || c.toLowerCase().includes('lng'));
+        
+        if (lIdx !== -1 && gIdx !== -1) {
+          headerIdx = i;
+          latIdx = lIdx;
+          lngIdx = gIdx;
+          endingTimeIdx = row.findIndex(c => c.includes('Ending Date and Time') || c.includes('結束時間') || c.includes('Ending'));
+          rainfallValIdx = row.findIndex(c => c.includes('Half-hourly Nowcast Accumulated Rainfall') || c.includes('Rainfall') || c.includes('降雨量'));
+          break;
         }
-      });
+      }
 
-      rainParsedDataset = [];
-      for (let i = 1; i < lines.length; i++) {
-        const row = lines[i].split(',');
+      if (headerIdx === -1 || latIdx === -1 || lngIdx === -1) {
+        throw new Error('Coordinate or column headers missing in CSV');
+      }
+
+      const rawUpdate = updateTimeStr.trim();
+      if (uEl) {
+        if (rawUpdate) {
+          const formattedRefresh = parseHKOTimeString(rawUpdate) || rawUpdate;
+          uEl.textContent = `更新 ${formattedRefresh}`;
+        } else {
+          const n = new Date();
+          uEl.textContent = `更新 ${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`;
+        }
+      }
+
+      const timeSeriesMap = new Map();
+
+      for (let i = headerIdx + 1; i < rows.length; i++) {
+        const row = rows[i];
         if (row.length <= Math.max(latIdx, lngIdx)) continue;
 
         const lat = parseFloat(row[latIdx]);
         const lng = parseFloat(row[lngIdx]);
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
 
-        const values = valIndices.map(vIdx => parseFloat(row[vIdx]) || 0);
-        rainParsedDataset.push({ lat, lng, values });
+        const endingTimeRaw = endingTimeIdx !== -1 ? row[endingTimeIdx] : '預報';
+        const endingLabel = parseHKOTimeString(endingTimeRaw);
+        
+        const rainfallValue = rainfallValIdx !== -1 ? (parseFloat(row[rainfallValIdx]) || 0) : 0;
+
+        if (!timeSeriesMap.has(endingLabel)) {
+          timeSeriesMap.set(endingLabel, []);
+        }
+        timeSeriesMap.get(endingLabel).push({ lat, lng, value: rainfallValue });
+      }
+
+      const timeLabels = Array.from(timeSeriesMap.keys());
+      rainTimeColumns = timeLabels.map((label, idx) => ({ indexInValList: idx, label }));
+
+      rainParsedDataset = [];
+      const totalPoints = timeSeriesMap.get(timeLabels[0])?.length || 0;
+
+      for (let ptIdx = 0; ptIdx < totalPoints; ptIdx++) {
+        const firstPt = timeSeriesMap.get(timeLabels[0])[ptIdx];
+        const values = timeLabels.map(label => timeSeriesMap.get(label)[ptIdx]?.value || 0);
+        rainParsedDataset.push({ lat: firstPt.lat, lng: firstPt.lng, values });
       }
 
       if (selectedTimeIdx < 0 || selectedTimeIdx >= rainTimeColumns.length) {
@@ -2234,11 +2325,6 @@
       }
 
       renderHeatmapForColumn(selectedTimeIdx);
-
-      if (uEl) {
-        const n = new Date();
-        uEl.textContent = `更新 ${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`;
-      }
       updateRainUserMarker();
     } catch (e) {
       console.warn('Rain CSV parse error:', e);
