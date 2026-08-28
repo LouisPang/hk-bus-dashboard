@@ -447,15 +447,15 @@
     </div>
     <div id="rain-map"></div>
     <div id="rain-map-legend">
-      <span class="swatch" style="background:#ffffb2"></span>&gt;0
-      <span class="swatch" style="background:#fecc5c"></span>&gt;1
-      <span class="swatch" style="background:#fd8d3c"></span>&gt;5
-      <span class="swatch" style="background:#f03b20"></span>&gt;15
-      <span class="swatch" style="background:#bd0026"></span>&gt;30 mm/hr
+      <span class="swatch" style="background:#00FF00"></span>&gt;0.5
+      <span class="swatch" style="background:#FFA500"></span>&gt;5
+      <span class="swatch" style="background:#FF0000"></span>&gt;15
+      <span class="swatch" style="background:#800080"></span>&gt;30 mm/hr
     </div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script>
   const STORAGE_KEY = 'hk-bus-dashboard.saved-routes';
   const ROUTE_DB_KEY = 'hk-bus-dashboard.route-db.v5';
@@ -1913,25 +1913,22 @@
 
 
   let rainMap = null, rainGeoJsonLayer = null, rainUserMarker = null;
-  const CSDI_NOWCAST_URL = 'https://api.csdi.gov.hk/apim/dataquery/api/v1/facility?id=hko_rcd_1637225134706_49942&enc=geojson';
+  const CSDI_ZIP_URL = 'https://static.csdi.gov.hk/csdi-webpage/download/59062732012b561991ae8b07f23beea4/geojson';
 
-  function getRainColor(rainfall) {
-    return rainfall > 30 ? '#bd0026' :
-           rainfall > 15 ? '#f03b20' :
-           rainfall > 5  ? '#fd8d3c' :
-           rainfall > 1  ? '#fecc5c' :
-           rainfall > 0  ? '#ffffb2' :
-                           'transparent';
+  function getRainColor(val) {
+    return val > 30 ? '#800080' : // Heavy Rain / Black Storm level (>30mm)
+           val > 15 ? '#FF0000' : // Moderate-Heavy / Red Storm level (>15mm)
+           val > 5  ? '#FFA500' : // Amber Storm level (>5mm)
+           val > 0.5? '#00FF00' : // Light Rain (>0.5mm)
+                      'transparent';
   }
 
   function getRainStyle(feature) {
-    const rainfall = feature.properties.RAINFALL || feature.properties.grid_value || 0;
+    const val = feature.properties.RAINFALL || feature.properties.rainfall || feature.properties.GRID_VAL || feature.properties.grid_value || 0;
     return {
-      fillColor: getRainColor(rainfall),
-      weight: 0.5,
-      opacity: 0.4,
-      color: '#666',
-      fillOpacity: 0.6
+      fillColor: getRainColor(val),
+      weight: 0,
+      fillOpacity: 0.5
     };
   }
 
@@ -1960,10 +1957,18 @@
     const uEl = document.getElementById('rain-updated');
     try {
       if (!rainMap) initRainMap();
-      const resp = await fetch(CSDI_NOWCAST_URL, { cache: 'no-store' });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      
+      const response = await fetch(CSDI_ZIP_URL, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      
+      const arrayBuffer = await response.arrayBuffer();
+      const zip = await JSZip.loadAsync(arrayBuffer);
+      
+      const geojsonFilename = Object.keys(zip.files).find(name => name.endsWith('.geojson') || name.endsWith('.json'));
+      if (!geojsonFilename) throw new Error('No GeoJSON inside zip');
 
-      const geojsonData = await resp.json();
+      const jsonText = await zip.files[geojsonFilename].async('text');
+      const geojsonData = JSON.parse(jsonText);
 
       if (rainGeoJsonLayer) {
         rainMap.removeLayer(rainGeoJsonLayer);
@@ -1972,11 +1977,10 @@
       rainGeoJsonLayer = L.geoJSON(geojsonData, {
         style: getRainStyle,
         onEachFeature: function (feature, layer) {
-          const props = feature.properties;
-          const rainfall = props.RAINFALL || props.grid_value || '0';
+          const val = feature.properties.RAINFALL || feature.properties.rainfall || feature.properties.GRID_VAL || feature.properties.grid_value || 0;
           layer.bindPopup(`
             <strong>HKO 網格預報</strong><br>
-            <strong>降雨強度:</strong> ${rainfall} mm/hr
+            <strong>降雨強度:</strong> ${val} mm/hr
           `);
         }
       }).addTo(rainMap);
