@@ -1913,7 +1913,7 @@
 
 
   let rainMap = null, rainGeoJsonLayer = null, rainUserMarker = null;
-  const CSDI_ZIP_URL = 'https://static.csdi.gov.hk/csdi-webpage/download/59062732012b561991ae8b07f23beea4/geojson';
+  const HKO_RAINFALL_CSV_URL = 'https://data.gov.hk/tc-data/dataset/hk-hko-rss-gridded-rainfall-nowcast-in-hong-kong/resource/9a88473a-d33c-455b-8b10-0f8fe128531f';
 
   function getRainColor(val) {
     return val > 30 ? '#800080' : // Heavy Rain / Black Storm level (>30mm)
@@ -1953,48 +1953,80 @@
     if (!rainMap.getBounds().contains(ll)) rainMap.panTo(ll);
   }
 
-  async function fetchAndRenderRain() {
-    const uEl = document.getElementById('rain-updated');
-    try {
-      if (!rainMap) initRainMap();
-      
-      const response = await fetch(CSDI_ZIP_URL, { cache: 'no-store' });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      
-      const arrayBuffer = await response.arrayBuffer();
-      const zip = await JSZip.loadAsync(arrayBuffer);
-      
-      const geojsonFilename = Object.keys(zip.files).find(name => name.endsWith('.geojson') || name.endsWith('.json'));
-      if (!geojsonFilename) throw new Error('No GeoJSON inside zip');
+async function fetchAndRenderRain() {
+  const uEl = document.getElementById('rain-updated');
+  try {
+    if (!rainMap) initRainMap();
 
-      const jsonText = await zip.files[geojsonFilename].async('text');
-      const geojsonData = JSON.parse(jsonText);
+    // Fetch the CSV directly
+    const response = await fetch(HKO_RAINFALL_CSV_URL, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    
+    const csvText = await response.text();
+    const lines = csvText.split(/\r?\n/);
+    
+    if (lines.length < 2) throw new Error('Empty or invalid CSV structure');
 
-      if (rainGeoJsonLayer) {
-        rainMap.removeLayer(rainGeoJsonLayer);
-      }
+    // Parse header column indices dynamically
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+    const latIdx = headers.findIndex(h => h.includes('lat'));
+    const lngIdx = headers.findIndex(h => h.includes('lon') || h.includes('lng'));
+    
+    // Select the first forecast value column or total rainfall column
+    const valIdx = headers.findIndex(h => h.includes('value') || h.includes('rainfall') || h.includes('rf') || h.includes('nowcast'));
 
-      rainGeoJsonLayer = L.geoJSON(geojsonData, {
-        style: getRainStyle,
-        onEachFeature: function (feature, layer) {
-          const val = feature.properties.RAINFALL || feature.properties.rainfall || feature.properties.GRID_VAL || feature.properties.grid_value || 0;
-          layer.bindPopup(`
-            <strong>HKO 網格預報</strong><br>
-            <strong>降雨強度:</strong> ${val} mm/hr
-          `);
-        }
-      }).addTo(rainMap);
-
-      if (uEl) {
-        const n = new Date();
-        uEl.textContent = `更新 ${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`;
-      }
-      updateRainUserMarker();
-    } catch (e) {
-      console.warn('Rain map error:', e);
-      if (uEl) uEl.textContent = '載入失敗';
+    if (latIdx === -1 || lngIdx === -1) {
+      throw new Error('Coordinate headers missing in CSV');
     }
+
+    // Clear existing grid overlay group
+    if (rainLayerGroup) {
+      rainMap.removeLayer(rainLayerGroup);
+    }
+    rainLayerGroup = L.layerGroup();
+
+    // Process row data into map markers/polygons
+    for (let i = 1; i < lines.length; i++) {
+      const row = lines[i].split(',');
+      if (row.length <= Math.max(latIdx, lngIdx)) continue;
+
+      const lat = parseFloat(row[latIdx]);
+      const lng = parseFloat(row[lngIdx]);
+      const val = valIdx !== -1 ? parseFloat(row[valIdx]) : 0;
+
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || val <= 0.5) continue;
+
+      const color = getRainColor(val);
+      
+      // Render grid points as subtle circles on Leaflet
+      const circle = L.circleMarker([lat, lng], {
+        radius: 6,
+        fillColor: color,
+        color: color,
+        weight: 1,
+        opacity: 0.6,
+        fillOpacity: 0.5
+      }).bindPopup(`
+        <strong>HKO 網格臨近預報</strong><br>
+        <strong>緯度/經度:</strong> ${lat.toFixed(3)}, ${lng.toFixed(3)}<br>
+        <strong>預測降雨量:</strong> ${val} mm/hr
+      `);
+
+      circle.addTo(rainLayerGroup);
+    }
+
+    rainLayerGroup.addTo(rainMap);
+
+    if (uEl) {
+      const n = new Date();
+      uEl.textContent = `更新 ${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`;
+    }
+    updateRainUserMarker();
+  } catch (e) {
+    console.warn('Rain CSV parse error:', e);
+    if (uEl) uEl.textContent = '載入失敗';
   }
+}
 
   setTimeout(() => { initRainMap(); fetchAndRenderRain(); }, 800);
   setInterval(fetchAndRenderRain, 12 * 60 * 1000);
