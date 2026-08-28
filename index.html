@@ -2479,6 +2479,9 @@ async function fetchAndRenderRain() {
       }
 
       logDebug(`Rain CSV parsed successfully: ${rows.length} rows, ${timeLabels.length} time frames.`);
+      const rainValues = rainParsedDataset.map(pt => pt.values[selectedTimeIdx] || 0);
+const minRainVal = rainValues.length > 0 ? Math.min(...rainValues) : 0;
+const maxRainVal = rainValues.length > 0 ? Math.max(...rainValues) : 0;
       const debugRainEl = document.getElementById('debug-rain-info');
       if (debugRainEl) {
         debugRainEl.innerHTML = `
@@ -2486,6 +2489,7 @@ async function fetchAndRenderRain() {
           <b>CSV Raw Rows:</b> ${rows.length}<br>
           <b>Parsed Points:</b> ${rainParsedDataset.length}<br>
           <b>Rainfall Col Index:</b> ${rainfallValIdx}<br>
+          <b>Rainfall Range:</b> ${minRainVal} mm - ${maxRainVal} mm<br>
           <b>Time Slots:</b> ${timeLabels.join(', ')}
         `;
       }
