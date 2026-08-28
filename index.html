@@ -394,18 +394,110 @@
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
   <style>
-    #rain-map-panel{flex-shrink:0;height:220px;margin-top:10px;border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--card-bg);position:relative;display:flex;flex-direction:column}
-    #rain-map-header{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:rgba(255,204,0,.06);border-bottom:1px solid var(--border);font-size:.82rem;font-weight:700;flex-shrink:0;z-index:10;gap:8px;}
-    #rain-map-header .title{color:var(--accent);white-space:nowrap;}
-    #rain-map-header .controls{display:flex;align-items:center;gap:6px;}
-    #rain-map-header select{background:#1a1a1a;color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:0.75rem;outline:none;cursor:pointer;}
-    #rain-map-header .meta{color:var(--subtext);font-weight:600;font-size:.75rem;white-space:nowrap;}
-    #rain-map{flex:1;width:100%;background:#0a0a0a;z-index:1}
-    #rain-map-legend{position:absolute;bottom:8px;left:8px;z-index:1000;background:rgba(0,0,0,.75);border-radius:8px;padding:4px 8px;font-size:.65rem;color:#ccc;display:flex;gap:6px;align-items:center;pointer-events:none}
-    #rain-map-legend .swatch{width:12px;height:10px;border-radius:2px;display:inline-block}
-    .leaflet-container{background:#0a0a0a!important;font-family:inherit}
-    .leaflet-control-attribution{font-size:9px!important;background:rgba(0,0,0,.5)!important;color:#888!important}
-    .leaflet-control-zoom a{background:#1a1a1a!important;color:#fff!important;border-color:#333!important}
+    #rain-map-panel {
+      flex-shrink: 0;
+      height: 250px;
+      margin-top: 10px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      background: var(--card-bg);
+      position: relative;
+      display: flex;
+      flex-direction: column;
+    }
+    #rain-map-panel.hidden {
+      display: none !important;
+    }
+    #rain-map-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 12px;
+      background: rgba(255,204,0,.06);
+      border-bottom: 1px solid var(--border);
+      font-size: .82rem;
+      font-weight: 700;
+      flex-shrink: 0;
+      z-index: 10;
+      gap: 8px;
+    }
+    #rain-map-header .title { color: var(--accent); white-space: nowrap; }
+    #rain-map-header .meta { color: var(--subtext); font-weight: 600; font-size: .75rem; white-space: nowrap; }
+    #rain-map { flex: 1; width: 100%; background: #0a0a0a; z-index: 1; }
+    
+    /* Interactive Playback Controller CSS */
+    .playback-controller {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(18, 18, 18, 0.9);
+      padding: 4px 10px;
+      border-top: 1px solid var(--border);
+      z-index: 10;
+      flex-shrink: 0;
+    }
+    .playback-btn {
+      background: #1a1a1a;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .playback-btn:hover { background: #333; }
+    .playback-time-label {
+      font-size: 0.8rem;
+      color: var(--accent);
+      font-weight: 700;
+      min-width: 65px;
+      text-align: center;
+    }
+    .playback-slider {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 4px;
+      border-radius: 2px;
+      background: #333;
+      outline: none;
+      cursor: pointer;
+    }
+    .playback-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+    }
+
+    #rain-map-legend {
+      position: absolute;
+      bottom: 42px;
+      left: 8px;
+      z-index: 1000;
+      background: rgba(0,0,0,.75);
+      border-radius: 8px;
+      padding: 4px 8px;
+      font-size: .65rem;
+      color: #ccc;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      pointer-events: none;
+    }
+    #rain-map-legend .swatch { width: 12px; height: 10px; border-radius: 2px; display: inline-block; }
+    .leaflet-container { background: #0a0a0a!important; font-family: inherit; }
+    .leaflet-control-attribution { font-size: 9px!important; background: rgba(0,0,0,.5)!important; color: #888!important; }
+    .leaflet-control-zoom a { background: #1a1a1a!important; color: #fff!important; border-color: #333!important; }
   </style>
 </head>
 <body>
@@ -442,17 +534,22 @@
     <div class="status-msg">正在初始化儀表板...</div>
   </div>
 
-  <div id="rain-map-panel">
+  <div id="rain-map-panel" class="hidden">
     <div id="rain-map-header">
       <div class="title">🌧️ 降雨熱力圖預報</div>
-      <div class="controls">
-        <select id="rain-time-select" onchange="onRainTimeChange(this.value)">
-          <option value="">載入時段中...</option>
-        </select>
-      </div>
       <div class="meta" id="rain-updated">載入中…</div>
     </div>
     <div id="rain-map"></div>
+    
+    <!-- Intuitive Playback Controller replacing the dropdown -->
+    <div class="playback-controller">
+      <button class="playback-btn" id="play-prev-btn" title="上一個時段">⏮</button>
+      <button class="playback-btn" id="play-toggle-btn" title="播放 / 暫停">▶</button>
+      <button class="playback-btn" id="play-next-btn" title="下一個時段">⏭</button>
+      <span class="playback-time-label" id="playback-time-display">--:--</span>
+      <input type="range" class="playback-slider" id="playback-slider" min="0" max="0" value="0" step="1">
+    </div>
+
     <div id="rain-map-legend">
       <span class="swatch" style="background:#00FF00"></span>&gt;0.5
       <span class="swatch" style="background:#FFA500"></span>&gt;5
@@ -462,7 +559,6 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <!-- Added leaflet-heat plugin for heatmap rendering -->
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script>
@@ -1006,6 +1102,22 @@
     }
   }
 
+  function updateRainMapVisibility() {
+    const rainPanel = document.getElementById('rain-map-panel');
+    if (!rainPanel) return;
+
+    // Show rain map ONLY in daily mode, hide in nearby mode
+    if (currentMode === 'daily') {
+      rainPanel.classList.remove('hidden');
+      if (rainMap) {
+        setTimeout(() => rainMap.invalidateSize(), 100);
+      }
+    } else {
+      rainPanel.classList.add('hidden');
+      stopRainPlayback();
+    }
+  }
+
   function attachModeHandlers() {
     document.querySelectorAll('.mode-button').forEach(button => {
       button.addEventListener('click', async () => {
@@ -1015,6 +1127,7 @@
         currentMode = selectedMode;
         document.querySelectorAll('.mode-button').forEach(b => b.classList.toggle('active', b.dataset.mode === currentMode));
         updateSearchVisibility();
+        updateRainMapVisibility();
 
         const etaContainerEl = document.getElementById('eta-container');
         if (etaContainerEl) etaContainerEl.classList.toggle('daily-columns', currentMode === 'daily');
@@ -1924,7 +2037,9 @@
   let rainMap = null, rainHeatLayer = null, rainUserMarker = null;
   let rainParsedDataset = [];
   let rainTimeColumns = [];
-  let selectedTimeIdx = -1;
+  let selectedTimeIdx = 0;
+  let playbackTimer = null;
+  let isPlaying = false;
 
   const HKO_RAINFALL_CSV_URL = 'https://tight-meadow-e6e3.pangshuntak12493.workers.dev/';
 
@@ -1949,6 +2064,8 @@
       subdomains: 'abcd',
       maxZoom: 18
     }).addTo(rainMap);
+
+    setupPlaybackControls();
   }
 
   function updateRainUserMarker() {
@@ -1968,7 +2085,6 @@
     rainParsedDataset.forEach(row => {
       const val = row.values[colIndex] || 0;
       if (val > 0.5) {
-        // Map values up to 40mm/hr to intensity [0.1, 1.0]
         const intensity = Math.min(1.0, Math.max(0.1, val / 35.0));
         heatPoints.push([row.lat, row.lng, intensity]);
       }
@@ -1982,25 +2098,96 @@
         blur: 14,
         maxZoom: 14,
         gradient: {
-          0.0: '#00FF00', // >0.5 mm
-          0.2: '#FFA500', // >5 mm
-          0.5: '#FF0000', // >15 mm
-          0.9: '#800080'  // >30 mm
+          0.0: '#00FF00',
+          0.2: '#FFA500',
+          0.5: '#FF0000',
+          0.9: '#800080'
         }
       }).addTo(rainMap);
     }
+
+    updatePlaybackUI();
   }
 
-  function onRainTimeChange(indexStr) {
-    const idx = parseInt(indexStr, 10);
-    if (!Number.isFinite(idx)) return;
-    selectedTimeIdx = idx;
-    renderHeatmapForColumn(selectedTimeIdx);
+  function setupPlaybackControls() {
+    const toggleBtn = document.getElementById('play-toggle-btn');
+    const prevBtn = document.getElementById('play-prev-btn');
+    const nextBtn = document.getElementById('play-next-btn');
+    const slider = document.getElementById('playback-slider');
+
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', () => {
+        if (isPlaying) stopRainPlayback();
+        else startRainPlayback();
+      });
+    }
+
+    if (prevBtn) {
+      prevBtn.addEventListener('click', () => {
+        stopRainPlayback();
+        if (rainTimeColumns.length > 0) {
+          selectedTimeIdx = (selectedTimeIdx - 1 + rainTimeColumns.length) % rainTimeColumns.length;
+          renderHeatmapForColumn(selectedTimeIdx);
+        }
+      });
+    }
+
+    if (nextBtn) {
+      nextBtn.addEventListener('click', () => {
+        stopRainPlayback();
+        if (rainTimeColumns.length > 0) {
+          selectedTimeIdx = (selectedTimeIdx + 1) % rainTimeColumns.length;
+          renderHeatmapForColumn(selectedTimeIdx);
+        }
+      });
+    }
+
+    if (slider) {
+      slider.addEventListener('input', (e) => {
+        stopRainPlayback();
+        selectedTimeIdx = parseInt(e.target.value, 10) || 0;
+        renderHeatmapForColumn(selectedTimeIdx);
+      });
+    }
+  }
+
+  function startRainPlayback() {
+    if (rainTimeColumns.length <= 1) return;
+    isPlaying = true;
+    const toggleBtn = document.getElementById('play-toggle-btn');
+    if (toggleBtn) toggleBtn.textContent = '⏸';
+
+    playbackTimer = setInterval(() => {
+      selectedTimeIdx = (selectedTimeIdx + 1) % rainTimeColumns.length;
+      renderHeatmapForColumn(selectedTimeIdx);
+    }, 1200);
+  }
+
+  function stopRainPlayback() {
+    isPlaying = false;
+    if (playbackTimer) {
+      clearInterval(playbackTimer);
+      playbackTimer = null;
+    }
+    const toggleBtn = document.getElementById('play-toggle-btn');
+    if (toggleBtn) toggleBtn.textContent = '▶';
+  }
+
+  function updatePlaybackUI() {
+    const timeDisplay = document.getElementById('playback-time-display');
+    const slider = document.getElementById('playback-slider');
+
+    if (rainTimeColumns[selectedTimeIdx]) {
+      if (timeDisplay) timeDisplay.textContent = rainTimeColumns[selectedTimeIdx].label;
+    }
+    if (slider) {
+      slider.max = Math.max(0, rainTimeColumns.length - 1);
+      slider.value = selectedTimeIdx;
+    }
   }
 
   async function fetchAndRenderRain() {
     const uEl = document.getElementById('rain-updated');
-    const selectEl = document.getElementById('rain-time-select');
 
     try {
       if (!rainMap) initRainMap();
@@ -2018,14 +2205,12 @@
 
       if (latIdx === -1 || lngIdx === -1) throw new Error('Coordinate headers missing in CSV');
 
-      // Identify dynamic rainfall column indices (all non-lat/lng numeric forecast windows)
       const valIndices = [];
       rainTimeColumns = [];
 
       headers.forEach((h, idx) => {
         if (idx !== latIdx && idx !== lngIdx) {
           valIndices.push(idx);
-          // Standardize column label for time options
           const label = h.replace(/^rf_/i, '').replace(/min$/i, '分').replace(/^0+/, '');
           rainTimeColumns.push({ indexInValList: valIndices.length - 1, label: label || '即時' });
         }
@@ -2044,16 +2229,8 @@
         rainParsedDataset.push({ lat, lng, values });
       }
 
-      // Populate Select UI
-      if (selectEl && rainTimeColumns.length > 0) {
-        selectEl.innerHTML = rainTimeColumns
-          .map((col, i) => `<option value="${i}">${escapeHtml(col.label)}</option>`)
-          .join('');
-        
-        if (selectedTimeIdx < 0 || selectedTimeIdx >= rainTimeColumns.length) {
-          selectedTimeIdx = 0;
-        }
-        selectEl.value = String(selectedTimeIdx);
+      if (selectedTimeIdx < 0 || selectedTimeIdx >= rainTimeColumns.length) {
+        selectedTimeIdx = 0;
       }
 
       renderHeatmapForColumn(selectedTimeIdx);
@@ -2084,6 +2261,7 @@
   });
 
   updateSearchVisibility();
+  updateRainMapVisibility();
   initDashboard();
   </script>
 </body>
