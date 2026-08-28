@@ -1930,10 +1930,22 @@ function initRainMap() {
   const el = document.getElementById('rain-map');
   if (!el) return;
 
-  rainMap = L.map('rain-map', { zoomControl: true, attributionControl: true, preferCanvas: true })
-             .setView([22.3193, 114.1694], 11);
+  rainMap = L.map('rain-map', {
+    zoomControl: true,
+    attributionControl: true,
+    preferCanvas: true
+  }).setView([22.3193, 114.1694], 11);
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  // Limit the view to Hong Kong bounding box
+  const hkBounds = L.latLngBounds(
+    [22.15, 113.80], // southwest corner
+    [22.55, 114.35]  // northeast corner
+  );
+  rainMap.setMaxBounds(hkBounds);
+  rainMap.setMinZoom(10); // prevent zooming out too far
+  rainMap.setMaxZoom(16); // prevent zooming in too far
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_2gm9_1_9b68fea67e86e6b53ba39bcd', {
     attribution: '&copy; OSM &copy; CARTO | Data: HKO / CSDI',
     subdomains: 'abcd',
     maxZoom: 18
