@@ -126,7 +126,7 @@
       font-weight: 700;
       border-radius: 999px;
       padding: 8px 14px;
-      min-width: 120px;
+      min-width: 100px;
       transition: 0.2s ease;
       cursor: pointer;
     }
@@ -380,6 +380,54 @@
     .provider-status .err { color: #ef4444; }
     .provider-status .loading { color: #f59e0b; }
     .provider-status .muted { color: #9ca3af; }
+
+    /* DEBUG TAB STYLES */
+    #debug-panel {
+      flex: 1;
+      overflow-y: auto;
+      background: #0a0a0a;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 0.8rem;
+      color: #00ff66;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    #debug-panel.hidden { display: none !important; }
+    .debug-section {
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 8px;
+      background: #111;
+    }
+    .debug-title {
+      font-weight: bold;
+      color: var(--accent);
+      margin-bottom: 6px;
+      border-bottom: 1px solid #222;
+      padding-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .debug-log {
+      max-height: 150px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: #aaa;
+    }
+    .debug-json {
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre;
+      background: #000;
+      padding: 6px;
+      color: #38bdf8;
+      border-radius: 4px;
+    }
   </style>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
@@ -506,6 +554,7 @@
     <div id="mode-switch">
       <button class="mode-button active" data-mode="nearby">附近即時</button>
       <button class="mode-button" data-mode="daily">我的路線</button>
+      <button class="mode-button" data-mode="debug">調試 (Debug)</button>
     </div>
     <div style="display:flex;align-items:center;gap:8px;">
       <div id="last-updated">KMB/LWB 更新 --:--</div><div id="ctb-updated">CTB 更新 --:--:--</div>
@@ -522,6 +571,32 @@
 
   <div id="eta-container">
     <div class="status-msg">正在初始化儀表板...</div>
+  </div>
+
+  <!-- DEBUG PANEL CONTAINER -->
+  <div id="debug-panel" class="hidden">
+    <div class="debug-section">
+      <div class="debug-title">
+        <span>系統 & 定位狀態</span>
+        <button onclick="updateDebugPanel()" style="background:#222;color:#fff;border:1px solid #555;padding:2px 6px;border-radius:4px;cursor:pointer;">刷新 Debug</button>
+      </div>
+      <div id="debug-system-info">載入中...</div>
+    </div>
+
+    <div class="debug-section">
+      <div class="debug-title">降雨預報 (Rain Forecast) CSV Inspector</div>
+      <div id="debug-rain-info">未載入降雨資料</div>
+    </div>
+
+    <div class="debug-section">
+      <div class="debug-title">最新巴士 ETA Data Stream</div>
+      <div id="debug-eta-json" class="debug-json">無紀錄</div>
+    </div>
+
+    <div class="debug-section">
+      <div class="debug-title">系統 Console Logs</div>
+      <div id="debug-log-console" class="debug-log"></div>
+    </div>
   </div>
 
   <div id="rain-map-panel" class="hidden">
@@ -556,6 +631,16 @@
   const ROUTE_DB_TTL = 86400000;
   const ETA_CACHE_TTL = 15000;
   const REQUEST_CONCURRENCY = 6;
+
+  // DEBUG LOGGING OVERRIDE
+  const debugLogs = [];
+  function logDebug(msg) {
+    const timestamp = new Date().toLocaleTimeString();
+    debugLogs.unshift(`[${timestamp}] ${msg}`);
+    if (debugLogs.length > 50) debugLogs.pop();
+    const logEl = document.getElementById('debug-log-console');
+    if (logEl) logEl.textContent = debugLogs.join('\n');
+  }
 
   const PROVIDERS = {
     kmb: { id: 'kmb', code: 'KMB', label: 'KMB', api: 'https://data.etabus.gov.hk/v1/transport/kmb' },
@@ -598,6 +683,7 @@
     try {
       const data = localStorage.getItem(STORAGE_KEY);
       savedRoutes = data ? JSON.parse(data) : [];
+      logDebug(`Loaded ${savedRoutes.length} saved routes.`);
     } catch (e) { savedRoutes = []; }
   }
 
@@ -678,6 +764,7 @@
   function applyLocation(lat, lng, sourceLabel) {
     userLocation = { lat, lng };
     locationSource = sourceLabel;
+    logDebug(`Location updated: ${lat.toFixed(4)}, ${lng.toFixed(4)} (${sourceLabel})`);
   }
 
   function usePresetMongKokLocation(reason = '') {
@@ -780,6 +867,7 @@
   function markProviderError(provider, error) {
     const msg = error instanceof Error ? error.message : String(error || 'API failed');
     setProviderLiveStatus(provider, 'error', { error: msg.slice(0, 80) });
+    logDebug(`[ERROR] ${provider} API failed: ${msg}`);
   }
 
   async function fetchProviderJson(url, provider) {
@@ -1106,6 +1194,42 @@
     }
   }
 
+  function updateDebugPanelVisibility() {
+    const debugEl = document.getElementById('debug-panel');
+    const etaEl = document.getElementById('eta-container');
+    if (!debugEl || !etaEl) return;
+
+    if (currentMode === 'debug') {
+      debugEl.classList.remove('hidden');
+      etaEl.style.display = 'none';
+      updateDebugPanel();
+    } else {
+      debugEl.classList.add('hidden');
+      etaEl.style.display = 'flex';
+    }
+  }
+
+  function updateDebugPanel() {
+    const sysEl = document.getElementById('debug-system-info');
+    if (sysEl) {
+      sysEl.innerHTML = `
+        <b>Current Mode:</b> ${currentMode}<br>
+        <b>Location:</b> ${userLocation ? `${userLocation.lat}, ${userLocation.lng} (${locationSource})` : 'Not loaded'}<br>
+        <b>Total Loaded Stops:</b> ${allStops.length}<br>
+        <b>Active Stops:</b> ${activeStopIds.length}<br>
+        <b>Nearby Stops:</b> ${nearbyStopIds.length}<br>
+        <b>Saved Routes:</b> ${savedRoutes.length}<br>
+        <b>KMB Live Status:</b> ${providerLiveStatus.kmb.state} (Err: ${providerLiveStatus.kmb.error || 'None'})<br>
+        <b>CTB Live Status:</b> ${providerLiveStatus.ctb.state} (Err: ${providerLiveStatus.ctb.error || 'None'})
+      `;
+    }
+
+    const etaJsonEl = document.getElementById('debug-eta-json');
+    if (etaJsonEl) {
+      etaJsonEl.textContent = JSON.stringify(latestEtaResults, null, 2);
+    }
+  }
+
   function attachModeHandlers() {
     document.querySelectorAll('.mode-button').forEach(button => {
       button.addEventListener('click', async () => {
@@ -1116,6 +1240,7 @@
         document.querySelectorAll('.mode-button').forEach(b => b.classList.toggle('active', b.dataset.mode === currentMode));
         updateSearchVisibility();
         updateRainMapVisibility();
+        updateDebugPanelVisibility();
 
         const etaContainerEl = document.getElementById('eta-container');
         if (etaContainerEl) etaContainerEl.classList.toggle('daily-columns', currentMode === 'daily');
@@ -1131,7 +1256,7 @@
             document.getElementById('eta-container').innerHTML = '<div class="status-msg">暫無已儲存路線。</div>';
             updateMetaText('已儲存站點');
           }
-        } else {
+        } else if (currentMode === 'nearby') {
           await initNearbyStops();
           renderEtas(latestEtaResults, latestGeneratedTimestamps);
         }
@@ -1423,6 +1548,7 @@
     routeDb = snapshot.routeDb || { kmb: {}, lwb: {}, ctb: {} };
     buildStopMetaMap();
     ctbRouteStopLastLoadedAt = snapshot.fetchedAt || Date.now();
+    logDebug(`Applied static snapshot with ${allStops.length} stops.`);
     return true;
   }
 
@@ -1719,6 +1845,7 @@
   async function fetchEtas(generation = etaRefreshGeneration) {
     if (!activeStopIds.length) return;
 
+    logDebug(`Fetching ETAs for ${activeStopIds.length} stops...`);
     const routeMap = {};
     const now = new Date();
     const generatedTimestamps = new Set();
@@ -1831,8 +1958,10 @@
     latestEtaResults = groupedList;
     latestGeneratedTimestamps = new Set(generatedTimestamps);
 
+    logDebug(`ETAs fetched: ${groupedList.length} route records processed.`);
     renderEtas(latestEtaResults, latestGeneratedTimestamps);
     updateLastUpdated([...new Set(groupedList.map(item => item.provider))]);
+    if (currentMode === 'debug') updateDebugPanel();
   }
 
   function addEtaRecord(routeMap, item, now) {
@@ -2222,6 +2351,7 @@
 
   async function fetchAndRenderRain() {
     const uEl = document.getElementById('rain-updated');
+    logDebug('Fetching rain CSV forecast...');
 
     try {
       if (!rainMap) initRainMap();
@@ -2314,11 +2444,25 @@
         selectedTimeIdx = 0;
       }
 
+      logDebug(`Rain CSV parsed successfully: ${rows.length} rows, ${timeLabels.length} time frames.`);
+      const debugRainEl = document.getElementById('debug-rain-info');
+      if (debugRainEl) {
+        debugRainEl.innerHTML = `
+          <b>Status:</b> Success<br>
+          <b>CSV Raw Rows:</b> ${rows.length}<br>
+          <b>Parsed Points:</b> ${rainParsedDataset.length}<br>
+          <b>Time Slots:</b> ${timeLabels.join(', ')}
+        `;
+      }
+
       renderHeatmapForColumn(selectedTimeIdx);
       updateRainUserMarker();
     } catch (e) {
       console.warn('Rain CSV parse error:', e);
+      logDebug(`[ERROR] Rain CSV Error: ${e.message}`);
       if (uEl) uEl.textContent = '載入失敗';
+      const debugRainEl = document.getElementById('debug-rain-info');
+      if (debugRainEl) debugRainEl.innerHTML = `<span style="color:#ef4444">Error loading CSV: ${e.message}</span>`;
     }
   }
 
