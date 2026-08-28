@@ -2482,6 +2482,17 @@ async function fetchAndRenderRain() {
       const rainValues = rainParsedDataset.map(pt => pt.values[selectedTimeIdx] || 0);
 const minRainVal = rainValues.length > 0 ? Math.min(...rainValues) : 0;
 const maxRainVal = rainValues.length > 0 ? Math.max(...rainValues) : 0;
+      // Filter points that fall within Hong Kong's geographic boundaries
+const hkPoints = rainParsedDataset.filter(pt => 
+  pt.lat >= 22.15 && pt.lat <= 22.58 && 
+  pt.lng >= 113.83 && pt.lng <= 114.44
+);
+
+// Get all rainfall values only for stations inside Hong Kong
+const hkRainValues = hkPoints.flatMap(pt => pt.values);
+
+const hkMin = hkRainValues.length ? Math.min(...hkRainValues) : 0;
+const hkMax = hkRainValues.length ? Math.max(...hkRainValues) : 0;
       const debugRainEl = document.getElementById('debug-rain-info');
       if (debugRainEl) {
         debugRainEl.innerHTML = `
@@ -2490,6 +2501,7 @@ const maxRainVal = rainValues.length > 0 ? Math.max(...rainValues) : 0;
           <b>Parsed Points:</b> ${rainParsedDataset.length}<br>
           <b>Rainfall Col Index:</b> ${rainfallValIdx}<br>
           <b>Rainfall Range:</b> ${minRainVal} mm - ${maxRainVal} mm<br>
+          <b>HK Rainfall Range:</b> ${hkMin} mm - ${hkMax} mm<br>
           <b>Time Slots:</b> ${timeLabels.join(', ')}
         `;
       }
