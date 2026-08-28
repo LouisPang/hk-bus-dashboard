@@ -1924,29 +1924,30 @@ async function fetchAndRenderRain() {
     if (!rainMap) initRainMap();
 
     const response = await fetch(HKO_RAINFALL_GEOJSON_URL, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const arrayBuffer = await response.arrayBuffer();
 
-    const geojson = await response.json();
+    // Unzip
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    const fileName = Object.keys(zip.files).find(name => name.endsWith(".geojson"));
+    const geojsonText = await zip.files[fileName].async("string");
+    const geojson = JSON.parse(geojsonText);
 
     // Clear old layer
     if (rainLayerGroup) rainMap.removeLayer(rainLayerGroup);
 
-    // Render GeoJSON directly
+    // Render GeoJSON
     rainLayerGroup = L.geoJson(geojson, {
-      style: feature => {
-        const val = feature.properties?.rainfall || feature.properties?.GRID_VAL || 0;
-        return {
-          fillColor: getRainColor(val),
-          color: getRainColor(val),
-          weight: 0.5,
-          fillOpacity: 0.6
-        };
-      },
-      onEachFeature: (feature, layer) => {
-        const val = feature.properties?.rainfall || 0;
+      style: f => ({
+        fillColor: getRainColor(f.properties?.rainfall || 0),
+        color: getRainColor(f.properties?.rainfall || 0),
+        weight: 0.5,
+        fillOpacity: 0.6
+      }),
+      onEachFeature: (f, layer) => {
+        const val = f.properties?.rainfall || 0;
         layer.bindPopup(`
           <strong>HKO 網格臨近預報</strong><br>
-          緯度/經度: ${feature.geometry.coordinates[1].toFixed(3)}, ${feature.geometry.coordinates[0].toFixed(3)}<br>
+          緯度/經度: ${f.geometry.coordinates[1].toFixed(3)}, ${f.geometry.coordinates[0].toFixed(3)}<br>
           預測降雨量: ${val} mm/hr
         `);
       }
