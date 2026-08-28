@@ -1915,7 +1915,7 @@
   let rainMap = null, rainGeoJsonLayer = null, rainUserMarker = null, rainLayerGroup = null;
 
 // Use direct HKO API URL instead of AllOrigins
-const HKO_RAINFALL_CSV_URL = 'https://data.weather.gov.hk/weatherAPI/hko_data/F3/Gridded_rainfall_nowcast.csv';
+const HKO_RAINFALL_CSV_URL = 'https://corsproxy.io/?https://data.weather.gov.hk/weatherAPI/hko_data/F3/Gridded_rainfall_nowcast.csv';
 
 function getRainColor(val) {
   return val > 30 ? '#800080' : // Black Rainstorm (>30mm)
