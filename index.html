@@ -1912,79 +1912,66 @@
   }
 
 
-  let rainMap = null, rainGeoJsonLayer = null, rainUserMarker = null;
-  const HKO_RAINFALL_CSV_URL = 'https://api.allorigins.win/raw?url=' + encodeURIComponent('https://data.weather.gov.hk/weatherAPI/hko_data/F3/Gridded_rainfall_nowcast.csv');
-  function getRainColor(val) {
-    return val > 30 ? '#800080' : // Heavy Rain / Black Storm level (>30mm)
-           val > 15 ? '#FF0000' : // Moderate-Heavy / Red Storm level (>15mm)
-           val > 5  ? '#FFA500' : // Amber Storm level (>5mm)
-           val > 0.5? '#00FF00' : // Light Rain (>0.5mm)
-                      'transparent';
-  }
+  let rainMap = null, rainGeoJsonLayer = null, rainUserMarker = null, rainLayerGroup = null;
 
-  function getRainStyle(feature) {
-    const val = feature.properties.RAINFALL || feature.properties.rainfall || feature.properties.GRID_VAL || feature.properties.grid_value || 0;
-    return {
-      fillColor: getRainColor(val),
-      weight: 0,
-      fillOpacity: 0.5
-    };
-  }
+// Use direct HKO API URL instead of AllOrigins
+const HKO_RAINFALL_CSV_URL = 'https://data.weather.gov.hk/weatherAPI/hko_data/F3/Gridded_rainfall_nowcast.csv';
 
-  function initRainMap() {
-    if (rainMap || typeof L === 'undefined') return;
-    const el = document.getElementById('rain-map');
-    if (!el) return;
+function getRainColor(val) {
+  return val > 30 ? '#800080' : // Black Rainstorm (>30mm)
+         val > 15 ? '#FF0000' : // Red Rainstorm (>15mm)
+         val > 5  ? '#FFA500' : // Amber Rainstorm (>5mm)
+         val > 0.5? '#00FF00' : // Light Rain (>0.5mm)
+                    'transparent';
+}
 
-    rainMap = L.map('rain-map', { zoomControl: true, attributionControl: true, preferCanvas: true }).setView([22.3193, 114.1694], 11);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_2gm9_1_9b68fea67e86e6b53ba39bcd', {
-      attribution: '&copy; OSM &copy; CARTO | Data: HKO / CSDI',
-      subdomains: 'abcd',
-      maxZoom: 18
-    }).addTo(rainMap);
-  }
+function initRainMap() {
+  if (rainMap || typeof L === 'undefined') return;
+  const el = document.getElementById('rain-map');
+  if (!el) return;
 
-  function updateRainUserMarker() {
-    if (!rainMap || !userLocation) return;
-    const ll = [userLocation.lat, userLocation.lng];
-    if (rainUserMarker) rainUserMarker.setLatLng(ll);
-    else rainUserMarker = L.circleMarker(ll, { radius: 7, color: '#FFCC00', weight: 2, fillColor: '#FFCC00', fillOpacity: 0.9 }).addTo(rainMap).bindTooltip('你的位置');
-    if (!rainMap.getBounds().contains(ll)) rainMap.panTo(ll);
-  }
+  rainMap = L.map('rain-map', { zoomControl: true, attributionControl: true, preferCanvas: true })
+             .setView([22.3193, 114.1694], 11);
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OSM &copy; CARTO | Data: HKO / CSDI',
+    subdomains: 'abcd',
+    maxZoom: 18
+  }).addTo(rainMap);
+}
+
+function updateRainUserMarker() {
+  if (!rainMap || !userLocation) return;
+  const ll = [userLocation.lat, userLocation.lng];
+  if (rainUserMarker) rainUserMarker.setLatLng(ll);
+  else rainUserMarker = L.circleMarker(ll, {
+    radius: 7, color: '#FFCC00', weight: 2, fillColor: '#FFCC00', fillOpacity: 0.9
+  }).addTo(rainMap).bindTooltip('你的位置');
+  if (!rainMap.getBounds().contains(ll)) rainMap.panTo(ll);
+}
 
 async function fetchAndRenderRain() {
   const uEl = document.getElementById('rain-updated');
   try {
     if (!rainMap) initRainMap();
 
-    // Fetch the CSV directly
     const response = await fetch(HKO_RAINFALL_CSV_URL, { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    
+
     const csvText = await response.text();
     const lines = csvText.split(/\r?\n/);
-    
     if (lines.length < 2) throw new Error('Empty or invalid CSV structure');
 
-    // Parse header column indices dynamically
     const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
     const latIdx = headers.findIndex(h => h.includes('lat'));
     const lngIdx = headers.findIndex(h => h.includes('lon') || h.includes('lng'));
-    
-    // Select the first forecast value column or total rainfall column
     const valIdx = headers.findIndex(h => h.includes('value') || h.includes('rainfall') || h.includes('rf') || h.includes('nowcast'));
 
-    if (latIdx === -1 || lngIdx === -1) {
-      throw new Error('Coordinate headers missing in CSV');
-    }
+    if (latIdx === -1 || lngIdx === -1) throw new Error('Coordinate headers missing in CSV');
 
-    // Clear existing grid overlay group
-    if (rainLayerGroup) {
-      rainMap.removeLayer(rainLayerGroup);
-    }
+    if (rainLayerGroup) rainMap.removeLayer(rainLayerGroup);
     rainLayerGroup = L.layerGroup();
 
-    // Process row data into map markers/polygons
     for (let i = 1; i < lines.length; i++) {
       const row = lines[i].split(',');
       if (row.length <= Math.max(latIdx, lngIdx)) continue;
@@ -1996,19 +1983,13 @@ async function fetchAndRenderRain() {
       if (!Number.isFinite(lat) || !Number.isFinite(lng) || val <= 0.5) continue;
 
       const color = getRainColor(val);
-      
-      // Render grid points as subtle circles on Leaflet
       const circle = L.circleMarker([lat, lng], {
-        radius: 6,
-        fillColor: color,
-        color: color,
-        weight: 1,
-        opacity: 0.6,
-        fillOpacity: 0.5
+        radius: 6, fillColor: color, color: color, weight: 1,
+        opacity: 0.6, fillOpacity: 0.5
       }).bindPopup(`
         <strong>HKO 網格臨近預報</strong><br>
-        <strong>緯度/經度:</strong> ${lat.toFixed(3)}, ${lng.toFixed(3)}<br>
-        <strong>預測降雨量:</strong> ${val} mm/hr
+        緯度/經度: ${lat.toFixed(3)}, ${lng.toFixed(3)}<br>
+        預測降雨量: ${val} mm/hr
       `);
 
       circle.addTo(rainLayerGroup);
@@ -2026,6 +2007,7 @@ async function fetchAndRenderRain() {
     if (uEl) uEl.textContent = '載入失敗';
   }
 }
+
 
   setTimeout(() => { initRainMap(); fetchAndRenderRain(); }, 800);
   setInterval(fetchAndRenderRain, 12 * 60 * 1000);
