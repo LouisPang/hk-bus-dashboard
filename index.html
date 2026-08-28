@@ -440,18 +440,18 @@
     <div class="status-msg">正在初始化儀表板...</div>
   </div>
 
-
   <div id="rain-map-panel">
     <div id="rain-map-header">
-      <div class="title">🌧️ 降雨臨近預報 <span id="rain-period" style="color:var(--subtext);font-weight:600;font-size:0.78rem">—</span></div>
+      <div class="title">🌧️ 降雨臨近預報 (HKO Spatial Grid)</div>
       <div class="meta" id="rain-updated">載入中…</div>
     </div>
     <div id="rain-map"></div>
     <div id="rain-map-legend">
-      <span class="swatch" style="background:#4fc3f7"></span>&lt;2.5
-      <span class="swatch" style="background:#ffeb3b"></span>2.5–5
-      <span class="swatch" style="background:#ff9800"></span>5–10
-      <span class="swatch" style="background:#f44336"></span>&gt;10 mm
+      <span class="swatch" style="background:#ffffb2"></span>&gt;0
+      <span class="swatch" style="background:#fecc5c"></span>&gt;1
+      <span class="swatch" style="background:#fd8d3c"></span>&gt;5
+      <span class="swatch" style="background:#f03b20"></span>&gt;15
+      <span class="swatch" style="background:#bd0026"></span>&gt;30 mm/hr
     </div>
   </div>
 
@@ -1912,61 +1912,94 @@
   }
 
 
-  let rainMap=null,rainLayer=null,rainUserMarker=null;
-  const RAIN_CSV='https://data.weather.gov.hk/weatherAPI/hko_data/F3/Gridded_rainfall_nowcast.csv';
-  const HK={minLat:22.15,maxLat:22.58,minLng:113.82,maxLng:114.45};
-  function rainColor(mm){if(mm<=0)return null;if(mm<2.5)return'#4fc3f7';if(mm<5)return'#ffeb3b';if(mm<10)return'#ff9800';return'#f44336'}
-  function parseRainCsv(text){
-    const lines=text.trim().split(/\r?\n/),by={};
-    for(let i=1;i<lines.length;i++){
-      const c=lines[i].split(',');if(c.length<5)continue;
-      const end=c[1].trim(),lat=+c[2],lng=+c[3],mm=+c[4];
-      if(!Number.isFinite(lat+lng+mm))continue;
-      if(lat<HK.minLat||lat>HK.maxLat||lng<HK.minLng||lng>HK.maxLng)continue;
-      if(!by[end])by[end]=[];
-      if(mm>0)by[end].push({lat,lng,mm});
-    }
-    const periods=Object.keys(by).sort();
-    return{periods,points:by};
+  let rainMap = null, rainGeoJsonLayer = null, rainUserMarker = null;
+  const CSDI_NOWCAST_URL = 'https://api.csdi.gov.hk/apim/dataquery/api/v1/facility?id=hko_rcd_1637225134706_49942&enc=geojson';
+
+  function getRainColor(rainfall) {
+    return rainfall > 30 ? '#bd0026' :
+           rainfall > 15 ? '#f03b20' :
+           rainfall > 5  ? '#fd8d3c' :
+           rainfall > 1  ? '#fecc5c' :
+           rainfall > 0  ? '#ffffb2' :
+                           'transparent';
   }
-  function formatRainPeriod(s){return(!s||s.length<12)?'—':`至 ${s.slice(8,10)}:${s.slice(10,12)}`}
-  function initRainMap(){
-    if(rainMap||typeof L==='undefined')return;
-    const el=document.getElementById('rain-map');if(!el)return;
-    rainMap=L.map('rain-map',{zoomControl:true,attributionControl:true,preferCanvas:true}).setView([22.3193,114.1694],11);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_2gm9_1_9b68fea67e86e6b53ba39bcd',{attribution:'&copy; OSM &copy; CARTO | 數據：香港天文台',subdomains:'abcd',maxZoom:18}).addTo(rainMap);
-    rainLayer=L.layerGroup().addTo(rainMap);
+
+  function getRainStyle(feature) {
+    const rainfall = feature.properties.RAINFALL || feature.properties.grid_value || 0;
+    return {
+      fillColor: getRainColor(rainfall),
+      weight: 0.5,
+      opacity: 0.4,
+      color: '#666',
+      fillOpacity: 0.6
+    };
   }
-  function updateRainUserMarker(){
-    if(!rainMap||!userLocation)return;
-    const ll=[userLocation.lat,userLocation.lng];
-    if(rainUserMarker)rainUserMarker.setLatLng(ll);
-    else rainUserMarker=L.circleMarker(ll,{radius:7,color:'#FFCC00',weight:2,fillColor:'#FFCC00',fillOpacity:.9}).addTo(rainMap).bindTooltip('你的位置');
-    if(!rainMap.getBounds().contains(ll))rainMap.panTo(ll);
+
+  function initRainMap() {
+    if (rainMap || typeof L === 'undefined') return;
+    const el = document.getElementById('rain-map');
+    if (!el) return;
+
+    rainMap = L.map('rain-map', { zoomControl: true, attributionControl: true, preferCanvas: true }).setView([22.3193, 114.1694], 11);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=cb1_2gm9_1_9b68fea67e86e6b53ba39bcd', {
+      attribution: '&copy; OSM &copy; CARTO | Data: HKO / CSDI',
+      subdomains: 'abcd',
+      maxZoom: 18
+    }).addTo(rainMap);
   }
-  async function fetchAndRenderRain(){
-    const uEl=document.getElementById('rain-updated'),pEl=document.getElementById('rain-period');
-    try{
-      if(!rainMap)initRainMap();
-      const resp=await fetch(RAIN_CSV,{cache:'no-store'});
-      if(!resp.ok)throw new Error('HTTP '+resp.status);
-      const {periods,points}=parseRainCsv(await resp.text());
-      if(!periods.length){if(uEl)uEl.textContent='暫無數據';return}
-      const target=periods[0],data=points[target]||[];
-      if(pEl)pEl.textContent=formatRainPeriod(target);
-      if(uEl){const n=new Date();uEl.textContent=`更新 ${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}`}
-      if(rainLayer)rainLayer.clearLayers();
-      data.forEach(p=>{
-        const color=rainColor(p.mm);if(!color)return;
-        L.circleMarker([p.lat,p.lng],{radius:p.mm>=10?7:p.mm>=5?5.5:4,color,weight:0,fillColor:color,fillOpacity:.65}).bindTooltip(p.mm.toFixed(1)+' mm').addTo(rainLayer);
-      });
+
+  function updateRainUserMarker() {
+    if (!rainMap || !userLocation) return;
+    const ll = [userLocation.lat, userLocation.lng];
+    if (rainUserMarker) rainUserMarker.setLatLng(ll);
+    else rainUserMarker = L.circleMarker(ll, { radius: 7, color: '#FFCC00', weight: 2, fillColor: '#FFCC00', fillOpacity: 0.9 }).addTo(rainMap).bindTooltip('你的位置');
+    if (!rainMap.getBounds().contains(ll)) rainMap.panTo(ll);
+  }
+
+  async function fetchAndRenderRain() {
+    const uEl = document.getElementById('rain-updated');
+    try {
+      if (!rainMap) initRainMap();
+      const resp = await fetch(CSDI_NOWCAST_URL, { cache: 'no-store' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
+      const geojsonData = await resp.json();
+
+      if (rainGeoJsonLayer) {
+        rainMap.removeLayer(rainGeoJsonLayer);
+      }
+
+      rainGeoJsonLayer = L.geoJSON(geojsonData, {
+        style: getRainStyle,
+        onEachFeature: function (feature, layer) {
+          const props = feature.properties;
+          const rainfall = props.RAINFALL || props.grid_value || '0';
+          layer.bindPopup(`
+            <strong>HKO 網格預報</strong><br>
+            <strong>降雨強度:</strong> ${rainfall} mm/hr
+          `);
+        }
+      }).addTo(rainMap);
+
+      if (uEl) {
+        const n = new Date();
+        uEl.textContent = `更新 ${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`;
+      }
       updateRainUserMarker();
-    }catch(e){console.warn('Rain map error:',e);if(uEl)uEl.textContent='載入失敗'}
+    } catch (e) {
+      console.warn('Rain map error:', e);
+      if (uEl) uEl.textContent = '載入失敗';
+    }
   }
-  setTimeout(()=>{initRainMap();fetchAndRenderRain()},800);
-  setInterval(fetchAndRenderRain,12*60*1000);
-  const _origApply=applyLocation;
-  applyLocation=function(lat,lng,src){_origApply(lat,lng,src);updateRainUserMarker()};
+
+  setTimeout(() => { initRainMap(); fetchAndRenderRain(); }, 800);
+  setInterval(fetchAndRenderRain, 12 * 60 * 1000);
+
+  const _origApply = applyLocation;
+  applyLocation = function(lat, lng, src) {
+    _origApply(lat, lng, src);
+    updateRainUserMarker();
+  };
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopEtaLoop();
