@@ -1983,10 +1983,14 @@ async function fetchAndRenderRain() {
       if (!Number.isFinite(lat) || !Number.isFinite(lng) || val <= 0.5) continue;
 
       const color = getRainColor(val);
-      const circle = L.circleMarker([lat, lng], {
-        radius: 6, fillColor: color, color: color, weight: 1,
-        opacity: 0.6, fillOpacity: 0.5
-      }).bindPopup(`
+const circle = L.circleMarker([lat, lng], {
+  radius: Math.min(12, Math.max(4, val / 2)), // scale size with rainfall
+  fillColor: color,
+  color: color,
+  weight: 1,
+  opacity: 0.7,
+  fillOpacity: 0.6
+}).bindPopup(`
         <strong>HKO 網格臨近預報</strong><br>
         緯度/經度: ${lat.toFixed(3)}, ${lng.toFixed(3)}<br>
         預測降雨量: ${val} mm/hr
