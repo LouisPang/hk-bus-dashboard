@@ -175,7 +175,9 @@ function updateDebugPanelVisibility() {
     updateDebugPanel();
   } else {
     debugEl.classList.add('hidden');
-    etaEl.style.display = 'flex';
+    // Clear inline display so CSS controls layout:
+    // nearby = flex column, daily = grid via .daily-columns
+    etaEl.style.display = '';
   }
 }
 
