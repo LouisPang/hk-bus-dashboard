@@ -861,11 +861,12 @@ function renderEtas(routes, generatedTimestamps = new Set()) {
       const cardMarkup = items
         .map((r) => {
           const firstEta = r.etas[0]?.minutes;
-          const nextEtas = r.etas
-            .slice(1, 3)
-            .map((eta) => `${eta.minutes}分`)
-            .reverse()
-            .join(' | ');
+
+          // First catchable ETA: soonest bus you can still walk to (eta >= walkMins)
+          const catchableIndex =
+            walkMins != null
+              ? r.etas.findIndex((eta) => eta.minutes >= walkMins)
+              : -1;
 
           const primaryEtaRemark = normalizeEtaRemark(r.etas[0]?.remark);
           const secondaryRemarks = r.etas
@@ -882,8 +883,24 @@ function renderEtas(routes, generatedTimestamps = new Set()) {
             firstEta != null
               ? `${firstEta}<span class="unit">分</span>`
               : '暫無';
+          let walkClass = '';
+          let primaryCatchableClass = '';
 
-          if (firstEta == null) {
+          if (walkMins != null && firstEta != null) {
+            // Both modes: one system — walk vs firstEta for number + card colour
+            if (firstEta < walkMins) {
+              timeClass = 'walk-miss';
+              walkClass = 'walk-miss';
+            } else if (firstEta <= walkMins + 2) {
+              timeClass = 'walk-tight';
+              walkClass = 'walk-tight';
+            } else {
+              timeClass = 'walk-ok';
+              walkClass = 'walk-ok';
+            }
+            if (firstEta === 0) displayTime = '到站';
+            if (catchableIndex === 0) primaryCatchableClass = 'catchable';
+          } else if (firstEta == null) {
             timeClass = 'muted';
           } else if (firstEta === 0) {
             timeClass = 'due';
@@ -894,13 +911,17 @@ function renderEtas(routes, generatedTimestamps = new Set()) {
             timeClass = 'warning';
           }
 
-          // Daily mode only: colour card by walk time vs first ETA
-          let walkClass = '';
-          if (currentMode === 'daily' && walkMins != null && firstEta != null) {
-            if (firstEta < walkMins) walkClass = 'walk-miss';
-            else if (firstEta <= walkMins + 1) walkClass = 'walk-tight';
-            else walkClass = 'walk-ok';
-          }
+          // Secondary ETAs (next 2); underline first catchable if it is among them
+          const secondaryEtaParts = r.etas.slice(1, 3).map((eta, i) => {
+            const absIndex = i + 1;
+            const isCatchable = catchableIndex === absIndex;
+            const cls = isCatchable ? 'catchable' : '';
+            return `<span class="${cls}">${eta.minutes}分</span>`;
+          });
+          // Display order: later bus first (same as before), then nearer
+          const nextEtasMarkup = secondaryEtaParts.length
+            ? secondaryEtaParts.reverse().join(' | ')
+            : '';
 
           const provider = r.provider || 'kmb';
           const isSaved = isSavedRoute(
@@ -945,8 +966,8 @@ function renderEtas(routes, generatedTimestamps = new Set()) {
 
             <div class="eta-times">
               <div class="eta-time-stack">
-                ${nextEtas ? `<div class="eta-secondary">${nextEtas}</div>` : ''}
-                <div class="eta-primary ${timeClass}">${displayTime}</div>
+                ${nextEtasMarkup ? `<div class="eta-secondary">${nextEtasMarkup}</div>` : ''}
+                <div class="eta-primary ${timeClass} ${primaryCatchableClass}">${displayTime}</div>
                 ${secondaryRemarkMarkup}
               </div>
               <button
@@ -970,7 +991,7 @@ function renderEtas(routes, generatedTimestamps = new Set()) {
         .join('');
 
       const timestampText = [...generatedTimestamps][0]
-        ? `資料 ${formatDataAge([...generatedTimestamps][0])}`
+        ? `${formatDataAge([...generatedTimestamps][0])}`
         : '';
 
       const distanceTitle = walkMins != null
