@@ -970,11 +970,11 @@ function renderEtas(routes, generatedTimestamps = new Set()) {
         .join('');
 
       const timestampText = [...generatedTimestamps][0]
-        ? `${formatDataAge([...generatedTimestamps][0])}`
+        ? `資料 ${formatDataAge([...generatedTimestamps][0])}`
         : '';
 
       const distanceTitle = walkMins != null
-        ? '直線距離估算，未計交通燈、升降機及繞路'
+        ? '直線距離 + 城市步行節奏 (55m/分) + 升降機緩衝 2 分'
         : '';
 
       return `
