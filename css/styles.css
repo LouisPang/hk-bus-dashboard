@@ -412,6 +412,19 @@
     .safe { color: var(--safe); }
     .muted { color: var(--subtext); }
 
+    /* Daily mode: walk time vs ETA comparison */
+    .eta-card.walk-miss {
+      border-left: 3px solid var(--urgent);
+      background: rgba(255, 69, 58, 0.08);
+    }
+    .eta-card.walk-tight {
+      border-left: 3px solid var(--warning);
+      background: rgba(255, 159, 10, 0.06);
+    }
+    .eta-card.walk-ok {
+      border-left: 3px solid var(--safe);
+    }
+
     @keyframes pulse {
       0% { opacity: 1; }
       50% { opacity: 0.4; }
