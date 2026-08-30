@@ -94,13 +94,23 @@ export function getDistanceKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-/** Conservative urban walk speed (m/min). Accounts for crossings, lifts, slight detours. */
-export const WALK_SPEED_M_PER_MIN = 65;
+/** City walking pace (m/min) — dense HK streets, crowds, crossings. */
+export const WALK_SPEED_M_PER_MIN = 55;
 
-/** Estimate walk minutes from straight-line distance (km). Returns null if invalid. */
+/** Fixed buffer (min) for lift / escalator / waiting — always applied. */
+export const WALK_BUFFER_MIN = 2;
+
+/**
+ * Estimate walk minutes from straight-line distance (km).
+ * Formula: ceil(metres / 55) + 2, minimum 1.
+ * Returns null if invalid.
+ */
 export function estimateWalkMinutes(distanceKm) {
   if (!Number.isFinite(distanceKm) || distanceKm <= 0) return null;
-  return Math.max(1, Math.ceil((distanceKm * 1000) / WALK_SPEED_M_PER_MIN));
+  return Math.max(
+    1,
+    Math.ceil((distanceKm * 1000) / WALK_SPEED_M_PER_MIN) + WALK_BUFFER_MIN
+  );
 }
 
 export function escapeHtml(value) {
@@ -182,4 +192,3 @@ export function logDebug(msg) {
 export function getDebugLogs() {
   return debugLogs;
 }
-
