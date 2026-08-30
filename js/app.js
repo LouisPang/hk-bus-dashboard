@@ -9,6 +9,7 @@ import {
   normalizeDirection,
   getProvider,
   getDistanceKm,
+  estimateWalkMinutes,
   escapeHtml,
   formatDataAge,
   getCompanyColours,
@@ -840,8 +841,11 @@ function renderEtas(routes, generatedTimestamps = new Set()) {
 
   container.innerHTML = sortedStops
     .map(({ stopId, stopName, stopDistance, items }) => {
+      const walkMins = estimateWalkMinutes(stopDistance);
       const stopDistanceText = Number.isFinite(stopDistance)
-        ? `${Math.round(stopDistance * 1000)}m`
+        ? walkMins != null
+          ? `${Math.round(stopDistance * 1000)}m (約${walkMins}分)`
+          : `${Math.round(stopDistance * 1000)}m`
         : '站點';
 
       items.sort((a, b) => {
@@ -890,6 +894,14 @@ function renderEtas(routes, generatedTimestamps = new Set()) {
             timeClass = 'warning';
           }
 
+          // Daily mode only: colour card by walk time vs first ETA
+          let walkClass = '';
+          if (currentMode === 'daily' && walkMins != null && firstEta != null) {
+            if (firstEta < walkMins) walkClass = 'walk-miss';
+            else if (firstEta <= walkMins + 1) walkClass = 'walk-tight';
+            else walkClass = 'walk-ok';
+          }
+
           const provider = r.provider || 'kmb';
           const isSaved = isSavedRoute(
             r.route,
@@ -921,7 +933,7 @@ function renderEtas(routes, generatedTimestamps = new Set()) {
             : '';
 
           return `
-          <div class="eta-card">
+          <div class="eta-card ${walkClass}">
             <div class="route-info">
               <div class="route-badge" style="background:${getCompanyColours(provider)};" title="${escapeHtml(getProvider(provider).label)}">
                 ${escapeHtml(r.route)}
@@ -961,11 +973,15 @@ function renderEtas(routes, generatedTimestamps = new Set()) {
         ? `資料 ${formatDataAge([...generatedTimestamps][0])}`
         : '';
 
+      const distanceTitle = walkMins != null
+        ? '直線距離估算，未計交通燈、升降機及繞路'
+        : '';
+
       return `
         <div class="stop-group">
           <div class="stop-header">
             <div class="stop-header-title">${escapeHtml(stopName)}</div>
-            <div class="stop-header-distance">
+            <div class="stop-header-distance" title="${escapeHtml(distanceTitle)}">
               ${escapeHtml(stopDistanceText)}
               ${timestampText ? ` · ${escapeHtml(timestampText)}` : ''}
             </div>
