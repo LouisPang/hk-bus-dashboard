@@ -50,6 +50,8 @@
       grid-column: 1;
       grid-row: 3;
       min-height: 0;
+      width: 100%;
+      max-width: 100%;
     }
     body.mode-daily > #rain-map-panel {
       grid-column: 2;
@@ -246,6 +248,9 @@
       flex-direction: column;
       margin-bottom: 8px;
       flex-shrink: 0;
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
     }
 
     .stop-header {
@@ -420,27 +425,47 @@
       margin-top: 60px;
     }
 
-    /* Compact daily mode: always 2 columns of stop groups (except phone) */
+    /* Daily mode: 2 equal columns; each stop card fills its column */
     #eta-container.daily-columns {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 10px;
       align-content: start;
-      align-items: start;
+      justify-items: stretch;
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
     }
     #eta-container.daily-columns .stop-group {
       margin-bottom: 0;
-      min-width: 0; /* allow grid shrink without overflow */
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      align-self: stretch;
     }
     #eta-container.daily-columns .stop-header {
-      padding: 5px 10px;
+      padding: 6px 12px;
+      width: 100%;
+      box-sizing: border-box;
     }
     #eta-container.daily-columns .stop-header-title {
-      font-size: 0.82rem;
+      font-size: 0.85rem;
+      flex: 1;
+      min-width: 0;
+    }
+    #eta-container.daily-columns .stop-card-list {
+      width: 100%;
     }
     #eta-container.daily-columns .eta-card {
-      min-height: 42px;
-      padding: 5px 10px;
+      min-height: 44px;
+      padding: 6px 12px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    #eta-container.daily-columns .route-info {
+      flex: 1;
+      min-width: 0;
     }
     #eta-container.daily-columns .route-badge {
       font-size: 1.05rem;
@@ -453,10 +478,16 @@
     #eta-container.daily-columns .eta-primary {
       font-size: 1.2rem;
     }
-    /* Phone only: single column */
+    /* Nearby mode (non-grid): cards also full width */
+    #eta-container:not(.daily-columns) .stop-group {
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+    }
+    /* Phone: single full-width column */
     @media (max-width: 560px) {
       #eta-container.daily-columns {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
       }
     }
 
