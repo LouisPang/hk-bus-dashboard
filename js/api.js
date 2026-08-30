@@ -29,7 +29,6 @@ export const providerLiveStatus = {
   ctb: { state: 'idle', lastSuccess: null, lastAttempt: null, error: '' }
 };
 
-let cachedHkoStations = null;
 
 export function enqueueRequest(task) {
   return new Promise((resolve, reject) => {
@@ -251,49 +250,74 @@ export function normalizeEtaItem(item, fallback = {}) {
 }
 
 // ── HKO Weather ──
+//
+// CLIMSTAT is not a valid HKO open-data dataType (API rejects it).
+// Station coords are fixed public HKO positions; names match rhrread
+// temperature.place strings (Traditional Chinese).
 
-async function getHkoStationCoordinates() {
-  if (cachedHkoStations) return cachedHkoStations;
-  try {
-    const res = await fetch(
-      'https://tight-meadow-e6e3.pangshuntak12493.workers.dev/climstat'
-    );
-    const json = await res.json();
+const HKO_TEMP_STATIONS = [
+  { name: '京士柏', lat: 22.3119, lng: 114.1728 },
+  { name: '香港天文台', lat: 22.3019, lng: 114.1742 },
+  { name: '黃竹坑', lat: 22.2478, lng: 114.1736 },
+  { name: '打鼓嶺', lat: 22.5286, lng: 114.1567 },
+  { name: '流浮山', lat: 22.4689, lng: 113.9836 },
+  { name: '大埔', lat: 22.4461, lng: 114.1789 },
+  { name: '沙田', lat: 22.4025, lng: 114.2097 },
+  { name: '屯門', lat: 22.3906, lng: 113.9769 },
+  { name: '將軍澳', lat: 22.3158, lng: 114.2558 },
+  { name: '西貢', lat: 22.3756, lng: 114.2742 },
+  { name: '長洲', lat: 22.2011, lng: 114.0267 },
+  { name: '赤鱲角', lat: 22.3094, lng: 113.9219 },
+  { name: '青衣', lat: 22.3478, lng: 114.1092 },
+  { name: '石崗', lat: 22.4361, lng: 114.0847 },
+  { name: '荃灣可觀', lat: 22.3839, lng: 114.1078 },
+  { name: '荃灣城門谷', lat: 22.3758, lng: 114.1242 },
+  { name: '香港公園', lat: 22.2778, lng: 114.1619 },
+  { name: '筲箕灣', lat: 22.2817, lng: 114.2361 },
+  { name: '九龍城', lat: 22.3350, lng: 114.1850 },
+  { name: '跑馬地', lat: 22.2708, lng: 114.1836 },
+  { name: '黃大仙', lat: 22.3422, lng: 114.1950 },
+  { name: '赤柱', lat: 22.2139, lng: 114.2186 },
+  { name: '觀塘', lat: 22.3186, lng: 114.2250 },
+  { name: '深水埗', lat: 22.3358, lng: 114.1369 },
+  { name: '啟德跑道公園', lat: 22.3097, lng: 114.2131 },
+  { name: '元朗公園', lat: 22.4417, lng: 114.0222 },
+  { name: '大美督', lat: 22.4750, lng: 114.2378 }
+];
 
-    if (Array.isArray(json)) {
-      cachedHkoStations = json
-        .map((stn) => ({
-          name: stn.stationNameTC || stn.stationName || stn.name,
-          lat: parseFloat(stn.latitude || stn.lat),
-          lng: parseFloat(stn.longitude || stn.lng || stn.lon)
-        }))
-        .filter(
-          (s) => s.name && Number.isFinite(s.lat) && Number.isFinite(s.lng)
-        );
-      return cachedHkoStations;
-    }
-  } catch (e) {
-    console.warn(
-      'Failed to dynamically fetch station list, using live payload matching fallback'
-    );
-  }
-  return [];
-}
+/**
+ * Pick the temperature station nearest to the user.
+ * Only considers stations that appear in the live rhrread payload.
+ */
+function findNearestTempReading(userLat, userLng, tempDataList) {
+  if (!tempDataList?.length) return null;
 
-function findClosestStationName(userLat, userLng, stationList) {
-  if (!stationList || !stationList.length) return null;
-  let closest = null;
-  let minDistance = Infinity;
+  const liveByPlace = new Map(
+    tempDataList.map((row) => [row.place, row])
+  );
 
-  stationList.forEach((stn) => {
+  let best = null;
+  let bestDist = Infinity;
+
+  for (const stn of HKO_TEMP_STATIONS) {
+    const live = liveByPlace.get(stn.name);
+    if (!live) continue;
     const dist = getDistanceKm(userLat, userLng, stn.lat, stn.lng);
-    if (dist < minDistance) {
-      minDistance = dist;
-      closest = stn.name;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = { place: stn.name, value: live.value, distKm: bestDist };
     }
-  });
+  }
 
-  return closest;
+  // Fallback: if names drifted, still return first live reading
+  if (!best && tempDataList[0]) {
+    return {
+      place: tempDataList[0].place,
+      value: tempDataList[0].value,
+      distKm: null
+    };
+  }
+  return best;
 }
 
 /**
@@ -326,24 +350,14 @@ export async function fetchWeather({
     currentStation = '';
 
     if (userLocation && tempDataList.length > 0) {
-      const dynamicStations = await getHkoStationCoordinates();
-
-      if (dynamicStations.length > 0) {
-        const nearest = findClosestStationName(
-          userLocation.lat,
-          userLocation.lng,
-          dynamicStations
-        );
-        const stnData = tempDataList.find((s) => s.place === nearest);
-        if (stnData) {
-          currentStation = stnData.place;
-          matchedTemp = stnData.value;
-        }
-      }
-
-      if (!matchedTemp) {
-        currentStation = tempDataList[0]?.place || '';
-        matchedTemp = tempDataList[0]?.value;
+      const nearest = findNearestTempReading(
+        userLocation.lat,
+        userLocation.lng,
+        tempDataList
+      );
+      if (nearest) {
+        currentStation = nearest.place;
+        matchedTemp = nearest.value;
       }
     } else if (tempDataList.length > 0) {
       currentStation = tempDataList[0]?.place || '';
