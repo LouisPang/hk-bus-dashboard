@@ -401,15 +401,17 @@
       margin-top: 60px;
     }
 
-    /* Compact daily mode ETA cards (left column) */
+    /* Compact daily mode: always 2 columns of stop groups (except phone) */
     #eta-container.daily-columns {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 8px;
       align-content: start;
+      align-items: start;
     }
     #eta-container.daily-columns .stop-group {
       margin-bottom: 0;
+      min-width: 0; /* allow grid shrink without overflow */
     }
     #eta-container.daily-columns .stop-header {
       padding: 5px 10px;
@@ -432,17 +434,7 @@
     #eta-container.daily-columns .eta-primary {
       font-size: 1.2rem;
     }
-    /* Single ETA column when left pane is narrow */
-    @media (max-width: 1100px) {
-      #eta-container.daily-columns {
-        grid-template-columns: 1fr;
-      }
-    }
-    @media (max-width: 820px) {
-      #eta-container.daily-columns {
-        grid-template-columns: 1fr 1fr;
-      }
-    }
+    /* Phone only: single column */
     @media (max-width: 560px) {
       #eta-container.daily-columns {
         grid-template-columns: 1fr;
