@@ -81,11 +81,17 @@
     header {
       display: flex;
       justify-content: space-between;
-      align-items: center;
+      align-items: flex-start;
+      gap: 16px;
       padding-bottom: 12px;
       border-bottom: 2px solid var(--border);
       margin-bottom: 12px;
       flex-shrink: 0;
+    }
+
+    .title-group {
+      flex: 1;
+      min-width: 0;
     }
 
     .title-group h1 {
@@ -93,6 +99,10 @@
       font-weight: 800;
       color: var(--accent);
       letter-spacing: 0.5px;
+    }
+
+    #clock {
+      flex-shrink: 0;
     }
 
     .meta-info {
@@ -106,19 +116,28 @@
       font-size: 0.95rem;
       color: var(--text);
       font-weight: 700;
-      line-height: 1.25;
-      white-space: nowrap;
+      line-height: 1.35;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      max-width: min(100%, 52rem);
     }
 
     .weather-commute {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 6px;
       margin-top: 3px;
       font-size: 0.86rem;
       color: var(--text);
       font-weight: 700;
-      line-height: 1.25;
+      line-height: 1.35;
+    }
+
+    .weather-commute #weather-advice {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      flex: 1;
+      min-width: 0;
     }
 
     .weather-commute .weather-icon {
