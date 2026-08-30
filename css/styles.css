@@ -412,7 +412,11 @@
     .safe { color: var(--safe); }
     .muted { color: var(--subtext); }
 
-    /* Daily mode: walk time vs ETA comparison */
+    /* Daily mode: walk time vs ETA — one colour system for number + card border */
+    .eta-primary.walk-miss { color: var(--urgent); }
+    .eta-primary.walk-tight { color: var(--warning); }
+    .eta-primary.walk-ok { color: var(--safe); }
+
     .eta-card.walk-miss {
       border-left: 3px solid var(--urgent);
       background: rgba(255, 69, 58, 0.08);
@@ -423,6 +427,14 @@
     }
     .eta-card.walk-ok {
       border-left: 3px solid var(--safe);
+    }
+
+    /* First catchable ETA underline */
+    .eta-primary.catchable,
+    .eta-secondary .catchable {
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      text-decoration-thickness: 2px;
     }
 
     @keyframes pulse {
