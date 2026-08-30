@@ -970,7 +970,7 @@ function renderEtas(routes, generatedTimestamps = new Set()) {
         .join('');
 
       const timestampText = [...generatedTimestamps][0]
-        ? `資料 ${formatDataAge([...generatedTimestamps][0])}`
+        ? `${formatDataAge([...generatedTimestamps][0])}`
         : '';
 
       const distanceTitle = walkMins != null
