@@ -31,7 +31,7 @@ export const HK_BOUNDS = {
 };
 
 export const HKO_RAINFALL_CSV_URL =
-  'https://tight-meadow-e6e3.pangshuntak12493.workers.dev/';
+  'https://tight-meadow-e6e3.pangshuntak12493.workers.dev/rainfall';
 
 export const PROVIDERS = {
   kmb: {
