@@ -94,6 +94,15 @@ export function getDistanceKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+/** Conservative urban walk speed (m/min). Accounts for crossings, lifts, slight detours. */
+export const WALK_SPEED_M_PER_MIN = 65;
+
+/** Estimate walk minutes from straight-line distance (km). Returns null if invalid. */
+export function estimateWalkMinutes(distanceKm) {
+  if (!Number.isFinite(distanceKm) || distanceKm <= 0) return null;
+  return Math.max(1, Math.ceil((distanceKm * 1000) / WALK_SPEED_M_PER_MIN));
+}
+
 export function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
