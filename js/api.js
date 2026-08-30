@@ -256,7 +256,7 @@ async function getHkoStationCoordinates() {
   if (cachedHkoStations) return cachedHkoStations;
   try {
     const res = await fetch(
-      'https://data.weather.gov.hk/weatherAPI/opendata/opendata.php?dataType=CLIMSTAT&lang=tc'
+      'https://tight-meadow-e6e3.pangshuntak12493.workers.dev/climstat'
     );
     const json = await res.json();
 
