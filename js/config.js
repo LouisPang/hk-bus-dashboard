@@ -18,8 +18,8 @@ export const STATIC_SNAPSHOT_KEY = 'all-providers-v2';
 export const STATIC_SNAPSHOT_TTL = 24 * 60 * 60 * 1000;
 
 export const PRESET_TEST_LOCATION = {
-  lat: 22.3193,
-  lng: 114.1694,
+  lat: 22.2193,
+  lng: 114.3694,
   label: '旺角（測試位置）'
 };
 
