@@ -11,7 +11,6 @@ import {
 let rainMap = null;
 let rainHeatLayer = null;
 let rainUserMarker = null;
-let rainCanvasRenderer = null;
 let rainParsedDataset = [];
 let rainTimeColumns = [];
 let selectedTimeIdx = 0;
@@ -64,8 +63,6 @@ export function initRainMap() {
       maxZoom: 18
     }
   ).addTo(rainMap);
-
-  rainCanvasRenderer = L.canvas({ padding: 0.5 });
 
   rainMap.fitBounds(hkBounds, { padding: [8, 8], maxZoom: 12 });
   setTimeout(() => {
@@ -165,14 +162,17 @@ function rainIntensityClass(mm) {
   return 'dry';
 }
 
-/** Legend-aligned fill colour. null = do not draw. */
-function rainToColor(mm) {
-  if (mm < 0.5) return null;
-  if (mm < 2.5) return '#7CFF7C';
-  if (mm < 5) return '#FFD700';
-  if (mm < 10) return '#FFA500';
-  if (mm < 20) return '#FF4500';
-  return '#C084FC';
+/**
+ * Map rainfall (mm) → leaflet-heat intensity (0–1), aligned with legend bands:
+ * ≥0.5 green · ≥2.5 gold · ≥5 orange · ≥10 red · ≥20 purple
+ */
+function rainToIntensity(mm) {
+  if (mm < 0.5) return 0;
+  if (mm < 2.5) return 0.4;
+  if (mm < 5) return 0.55;
+  if (mm < 10) return 0.7;
+  if (mm < 20) return 0.85;
+  return 1;
 }
 
 function findNearestRainValue(colIndex) {
@@ -224,42 +224,52 @@ function updateLocalRainBadge() {
 function renderHeatmapForColumn(colIndex) {
   if (!rainMap || !rainParsedDataset.length) return;
 
+  const heatPoints = [];
+  rainParsedDataset.forEach((row) => {
+    const val = row.values[colIndex] || 0;
+    const intensity = rainToIntensity(val);
+    if (intensity > 0) {
+      heatPoints.push([row.lat, row.lng, intensity]);
+    }
+  });
+
   if (rainHeatLayer) {
     rainMap.removeLayer(rainHeatLayer);
     rainHeatLayer = null;
   }
 
-  if (!rainCanvasRenderer) {
-    rainCanvasRenderer = L.canvas({ padding: 0.5 });
+  if (typeof L.heatLayer === 'function' && heatPoints.length > 0) {
+    // maxZoom must be <= typical view zoom. leaflet-heat scales intensity
+    // down by 2^(maxZoom - currentZoom); with maxZoom 14 at zoom 10 heat is ~1/16.
+    rainHeatLayer = L.heatLayer(heatPoints, {
+      radius: 32,
+      blur: 26,
+      maxZoom: 8,
+      max: 1,
+      minOpacity: 0.45,
+      gradient: {
+        0.0: '#7CFF7C',
+        0.4: '#7CFF7C',
+        0.55: '#FFD700',
+        0.7: '#FFA500',
+        0.85: '#FF4500',
+        1.0: '#C084FC'
+      }
+    }).addTo(rainMap);
+  } else if (heatPoints.length > 0) {
+    logDebug('[ERROR] L.heatLayer is not available');
   }
 
-  const group = L.layerGroup();
-  const latLngs = [];
-
-  rainParsedDataset.forEach((row) => {
-    const val = row.values[colIndex] || 0;
-    const color = rainToColor(val);
-    if (!color) return;
-    latLngs.push([row.lat, row.lng]);
-    L.circleMarker([row.lat, row.lng], {
-      renderer: rainCanvasRenderer,
-      radius: 11,
-      stroke: false,
-      fillColor: color,
-      fillOpacity: 0.72
-    }).addTo(group);
-  });
-
-  rainHeatLayer = group.addTo(rainMap);
   if (rainUserMarker) rainUserMarker.bringToFront();
 
   logDebug(
-    `Rain layer: slot ${colIndex} → ${latLngs.length} cells ≥0.5 mm`
+    `Rain heat: slot ${colIndex} → ${heatPoints.length} cells ≥0.5 mm`
   );
 
-  // If rain exists but none is in the current view, zoom out to show it
-  if (latLngs.length > 0) {
-    const rainBounds = L.latLngBounds(latLngs);
+  if (heatPoints.length > 0) {
+    const rainBounds = L.latLngBounds(
+      heatPoints.map((p) => [p[0], p[1]])
+    );
     const view = rainMap.getBounds();
     if (!view.intersects(rainBounds)) {
       const hk = L.latLngBounds(HK_VIEW_BOUNDS);
