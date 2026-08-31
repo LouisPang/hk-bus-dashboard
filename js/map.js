@@ -162,17 +162,14 @@ function rainIntensityClass(mm) {
   return 'dry';
 }
 
-/**
- * Map rainfall (mm) → heat intensity (0–1), aligned with legend bands:
- * ≥0.5 green · ≥2.5 gold · ≥5 orange · ≥10 red · ≥20 purple
- */
-function rainToIntensity(mm) {
-  if (mm < 0.5) return 0;
-  if (mm >= 20) return 1;
-  if (mm >= 10) return 0.82 + 0.18 * Math.min(1, (mm - 10) / 10);
-  if (mm >= 5) return 0.64 + 0.18 * ((mm - 5) / 5);
-  if (mm >= 2.5) return 0.46 + 0.18 * ((mm - 2.5) / 2.5);
-  return 0.28 + 0.18 * ((mm - 0.5) / 2);
+/** Legend colour for a rainfall value (mm). */
+function rainToRgb(mm) {
+  if (mm < 0.5) return null;
+  if (mm < 2.5) return [124, 255, 124];
+  if (mm < 5) return [255, 215, 0];
+  if (mm < 10) return [255, 165, 0];
+  if (mm < 20) return [255, 69, 0];
+  return [192, 132, 252];
 }
 
 let RainHeatOverlay = null;
@@ -196,7 +193,6 @@ function getRainHeatOverlayClass() {
       );
       this._canvas.style.pointerEvents = 'none';
       this._ctx = this._canvas.getContext('2d', { willReadFrequently: true });
-      this._gradient = this._makeGradient();
       map.getPanes().overlayPane.appendChild(this._canvas);
       map.on('moveend zoomend resize viewreset', this._redraw, this);
       this._redraw();
@@ -205,29 +201,15 @@ function getRainHeatOverlayClass() {
       L.DomUtil.remove(this._canvas);
       map.off('moveend zoomend resize viewreset', this._redraw, this);
     },
-    _makeGradient() {
-      const c = document.createElement('canvas');
-      c.width = 1;
-      c.height = 256;
-      const g = c.getContext('2d').createLinearGradient(0, 0, 0, 256);
-      g.addColorStop(0.0, 'rgba(124,255,124,0)');
-      g.addColorStop(0.22, '#7CFF7C');
-      g.addColorStop(0.42, '#FFD700');
-      g.addColorStop(0.6, '#FFA500');
-      g.addColorStop(0.78, '#FF4500');
-      g.addColorStop(1.0, '#C084FC');
-      const ctx = c.getContext('2d');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, 1, 256);
-      return ctx.getImageData(0, 0, 1, 256).data;
-    },
     _redraw() {
       const map = this._map;
       if (!map || !this._canvas) return;
       const size = map.getSize();
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      this._canvas.width = Math.max(1, Math.round(size.x * dpr));
-      this._canvas.height = Math.max(1, Math.round(size.y * dpr));
+      const w = Math.max(1, Math.round(size.x * dpr));
+      const h = Math.max(1, Math.round(size.y * dpr));
+      this._canvas.width = w;
+      this._canvas.height = h;
       this._canvas.style.width = `${size.x}px`;
       this._canvas.style.height = `${size.y}px`;
       L.DomUtil.setPosition(
@@ -236,43 +218,65 @@ function getRainHeatOverlayClass() {
       );
 
       const ctx = this._ctx;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, size.x, size.y);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, w, h);
       if (!this._points.length) return;
 
       const zoom = map.getZoom();
       const lat = map.getCenter().lat;
       const metersPerPx =
         (156543.03392 * Math.cos((lat * Math.PI) / 180)) / 2 ** zoom;
-      // HKO grid ~2 km; radius covers a cell and blends with neighbours
-      const radius = Math.max(18, Math.min(64, (2000 / metersPerPx) * 0.9));
+      const radiusCss = Math.max(22, Math.min(180, (2000 / metersPerPx) * 1.25));
+      const radius = radiusCss * dpr;
+      const r2 = radius * radius;
+      const rCeil = Math.ceil(radius);
 
-      const bounds = map.getBounds().pad(0.2);
-      ctx.globalCompositeOperation = 'lighter';
+      const sumMm = new Float32Array(w * h);
+      const sumW = new Float32Array(w * h);
+      const bounds = map.getBounds().pad(0.25);
+
       for (let i = 0; i < this._points.length; i++) {
         const p = this._points[i];
         if (!bounds.contains([p[0], p[1]])) continue;
+        const mm = p[2];
         const pt = map.latLngToContainerPoint([p[0], p[1]]);
-        const a = Math.max(0.15, Math.min(1, p[2]));
-        const grd = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, radius);
-        grd.addColorStop(0, `rgba(255,255,255,${a})`);
-        grd.addColorStop(0.45, `rgba(255,255,255,${a * 0.45})`);
-        grd.addColorStop(1, 'rgba(255,255,255,0)');
-        ctx.fillStyle = grd;
-        ctx.fillRect(pt.x - radius, pt.y - radius, radius * 2, radius * 2);
+        const cx = pt.x * dpr;
+        const cy = pt.y * dpr;
+        const x0 = Math.max(0, Math.floor(cx - rCeil));
+        const y0 = Math.max(0, Math.floor(cy - rCeil));
+        const x1 = Math.min(w - 1, Math.ceil(cx + rCeil));
+        const y1 = Math.min(h - 1, Math.ceil(cy + rCeil));
+        for (let y = y0; y <= y1; y++) {
+          const dy = y - cy;
+          const dy2 = dy * dy;
+          const row = y * w;
+          for (let x = x0; x <= x1; x++) {
+            const dx = x - cx;
+            const d2 = dx * dx + dy2;
+            if (d2 >= r2) continue;
+            const t = Math.sqrt(d2) / radius;
+            const wt = (1 - t) * (1 - t);
+            const idx = row + x;
+            sumMm[idx] += mm * wt;
+            sumW[idx] += wt;
+          }
+        }
       }
 
-      const img = ctx.getImageData(0, 0, this._canvas.width, this._canvas.height);
+      const img = ctx.createImageData(w, h);
       const pix = img.data;
-      const grad = this._gradient;
-      for (let i = 0; i < pix.length; i += 4) {
-        const alpha = pix[i + 3];
-        if (!alpha) continue;
-        const gi = alpha * 4;
-        pix[i] = grad[gi];
-        pix[i + 1] = grad[gi + 1];
-        pix[i + 2] = grad[gi + 2];
-        pix[i + 3] = Math.min(210, Math.round(alpha * 0.95 + 30));
+      for (let i = 0; i < sumW.length; i++) {
+        const sw = sumW[i];
+        if (sw < 0.05) continue;
+        const avg = sumMm[i] / sw;
+        const rgb = rainToRgb(avg);
+        if (!rgb) continue;
+        const cover = Math.min(1, sw / 0.55);
+        const o = i * 4;
+        pix[o] = rgb[0];
+        pix[o + 1] = rgb[1];
+        pix[o + 2] = rgb[2];
+        pix[o + 3] = Math.round(cover * 200);
       }
       ctx.putImageData(img, 0, 0);
     }
@@ -286,10 +290,7 @@ function renderHeatmapForColumn(colIndex) {
   const heatPoints = [];
   rainParsedDataset.forEach((row) => {
     const val = row.values[colIndex] || 0;
-    const intensity = rainToIntensity(val);
-    if (intensity > 0) {
-      heatPoints.push([row.lat, row.lng, intensity]);
-    }
+    if (val >= 0.5) heatPoints.push([row.lat, row.lng, val]);
   });
 
   if (rainHeatLayer) {
@@ -517,7 +518,7 @@ export async function fetchAndRenderRain() {
       }
     }
 
-const pointMap = new Map();
+    const pointMap = new Map();
     for (const row of dataRows) {
       if (row.length <= Math.max(latIdx, lngIdx, rainfallValIdx)) continue;
       const lat = parseFloat(row[latIdx]);
@@ -530,27 +531,17 @@ const pointMap = new Map();
 
       const rainfallValue = parseFloat(row[rainfallValIdx]) || 0;
       const key = `${lat.toFixed(4)},${lng.toFixed(4)}`;
-      
       if (!pointMap.has(key)) {
         pointMap.set(key, {
           lat,
           lng,
-          sums: new Array(endingOrder.length).fill(0),
-          counts: new Array(endingOrder.length).fill(0)
+          values: new Array(endingOrder.length).fill(0)
         });
       }
-      
-      const point = pointMap.get(key);
-      point.sums[tIdx] += rainfallValue;
-      point.counts[tIdx] += 1;
+      pointMap.get(key).values[tIdx] = rainfallValue;
     }
 
-    // Convert accumulated sums and counts to average values per grid point
-    rainParsedDataset = Array.from(pointMap.values()).map((pt) => ({
-      lat: pt.lat,
-      lng: pt.lng,
-      values: pt.sums.map((sum, idx) => (pt.counts[idx] > 0 ? sum / pt.counts[idx] : 0))
-    }));
+    rainParsedDataset = Array.from(pointMap.values());
 
     rainTimeColumns = endingOrder.map((endRaw, idx) => {
       const prev = idx > 0 ? endingOrder[idx - 1] : null;
