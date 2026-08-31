@@ -11,6 +11,7 @@ import {
 let rainMap = null;
 let rainHeatLayer = null;
 let rainUserMarker = null;
+let rainCanvasRenderer = null;
 let rainParsedDataset = [];
 let rainTimeColumns = [];
 let selectedTimeIdx = 0;
@@ -20,6 +21,17 @@ let rainUpdateTimestamp = '';
 
 /** Optional: set by app when location changes */
 let userLocationRef = null;
+
+const HK_VIEW_BOUNDS = [
+  [22.15, 113.82],
+  [22.56, 114.42]
+];
+
+/** Full HKO nowcast grid (PRD + south waters) */
+const RAIN_GRID_BOUNDS = [
+  [21.32, 112.95],
+  [23.49, 115.30]
+];
 
 export function setRainUserLocation(loc) {
   userLocationRef = loc;
@@ -31,15 +43,16 @@ export function initRainMap() {
   const el = document.getElementById('rain-map');
   if (!el) return;
 
-  const hkBounds = L.latLngBounds([22.15, 113.82], [22.56, 114.42]);
+  const hkBounds = L.latLngBounds(HK_VIEW_BOUNDS);
+  const gridBounds = L.latLngBounds(RAIN_GRID_BOUNDS);
 
   rainMap = L.map('rain-map', {
     zoomControl: true,
     attributionControl: true,
     preferCanvas: true,
-    maxBounds: hkBounds.pad(0.15),
-    maxBoundsViscosity: 0.85,
-    minZoom: 10,
+    maxBounds: gridBounds.pad(0.08),
+    maxBoundsViscosity: 0.6,
+    minZoom: 8,
     maxZoom: 14
   });
 
@@ -52,6 +65,8 @@ export function initRainMap() {
     }
   ).addTo(rainMap);
 
+  rainCanvasRenderer = L.canvas({ padding: 0.5 });
+
   rainMap.fitBounds(hkBounds, { padding: [8, 8], maxZoom: 12 });
   setTimeout(() => {
     rainMap.invalidateSize();
@@ -63,9 +78,11 @@ export function initRainMap() {
 
 export function fitRainMapToHK() {
   if (!rainMap) return;
-  const hkBounds = L.latLngBounds([22.15, 113.82], [22.56, 114.42]);
   rainMap.invalidateSize();
-  rainMap.fitBounds(hkBounds, { padding: [8, 8], maxZoom: 12 });
+  rainMap.fitBounds(L.latLngBounds(HK_VIEW_BOUNDS), {
+    padding: [8, 8],
+    maxZoom: 12
+  });
 }
 
 export function updateRainUserMarker() {
@@ -79,12 +96,12 @@ export function updateRainUserMarker() {
       color: '#FFCC00',
       weight: 2,
       fillColor: '#FFCC00',
-      fillOpacity: 0.9
+      fillOpacity: 0.9,
+      pane: 'markerPane'
     })
       .addTo(rainMap)
       .bindTooltip('你的位置');
   }
-  if (!rainMap.getBounds().contains(ll)) rainMap.panTo(ll);
   updateLocalRainBadge();
 }
 
@@ -148,17 +165,14 @@ function rainIntensityClass(mm) {
   return 'dry';
 }
 
-/**
- * Map rainfall (mm) → leaflet-heat intensity (0–1), aligned with legend bands:
- * ≥0.5 green · ≥2.5 gold · ≥5 orange · ≥10 red · ≥20 purple
- */
-function rainToIntensity(mm) {
-  if (mm < 0.5) return 0;
-  if (mm < 2.5) return 0.15;
-  if (mm < 5) return 0.35;
-  if (mm < 10) return 0.55;
-  if (mm < 20) return 0.75;
-  return 0.95;
+/** Legend-aligned fill colour. null = do not draw. */
+function rainToColor(mm) {
+  if (mm < 0.5) return null;
+  if (mm < 2.5) return '#7CFF7C';
+  if (mm < 5) return '#FFD700';
+  if (mm < 10) return '#FFA500';
+  if (mm < 20) return '#FF4500';
+  return '#C084FC';
 }
 
 function findNearestRainValue(colIndex) {
@@ -210,37 +224,50 @@ function updateLocalRainBadge() {
 function renderHeatmapForColumn(colIndex) {
   if (!rainMap || !rainParsedDataset.length) return;
 
-  const heatPoints = [];
-  rainParsedDataset.forEach((row) => {
-    const val = row.values[colIndex] || 0;
-    const intensity = rainToIntensity(val);
-    if (intensity > 0) {
-      heatPoints.push([row.lat, row.lng, intensity]);
-    }
-  });
-
-  // Recreate layer so gradient/options always match legend bands
   if (rainHeatLayer) {
     rainMap.removeLayer(rainHeatLayer);
     rainHeatLayer = null;
   }
 
-  if (typeof L.heatLayer === 'function' && heatPoints.length > 0) {
-    rainHeatLayer = L.heatLayer(heatPoints, {
-      radius: 26,
-      blur: 18,
-      maxZoom: 14,
-      max: 1,
-      minOpacity: 0.45,
-      gradient: {
-        0.0: '#7CFF7C',
-        0.15: '#7CFF7C',
-        0.35: '#FFD700',
-        0.55: '#FFA500',
-        0.75: '#FF4500',
-        0.95: '#C084FC'
-      }
-    }).addTo(rainMap);
+  if (!rainCanvasRenderer) {
+    rainCanvasRenderer = L.canvas({ padding: 0.5 });
+  }
+
+  const group = L.layerGroup();
+  const latLngs = [];
+
+  rainParsedDataset.forEach((row) => {
+    const val = row.values[colIndex] || 0;
+    const color = rainToColor(val);
+    if (!color) return;
+    latLngs.push([row.lat, row.lng]);
+    L.circleMarker([row.lat, row.lng], {
+      renderer: rainCanvasRenderer,
+      radius: 11,
+      stroke: false,
+      fillColor: color,
+      fillOpacity: 0.72
+    }).addTo(group);
+  });
+
+  rainHeatLayer = group.addTo(rainMap);
+  if (rainUserMarker) rainUserMarker.bringToFront();
+
+  logDebug(
+    `Rain layer: slot ${colIndex} → ${latLngs.length} cells ≥0.5 mm`
+  );
+
+  // If rain exists but none is in the current view, zoom out to show it
+  if (latLngs.length > 0) {
+    const rainBounds = L.latLngBounds(latLngs);
+    const view = rainMap.getBounds();
+    if (!view.intersects(rainBounds)) {
+      const hk = L.latLngBounds(HK_VIEW_BOUNDS);
+      rainMap.fitBounds(hk.extend(rainBounds), {
+        padding: [16, 16],
+        maxZoom: 10
+      });
+    }
   }
 
   updatePlaybackUI();
