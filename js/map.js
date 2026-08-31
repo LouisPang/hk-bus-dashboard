@@ -149,6 +149,19 @@ function rainIntensityClass(mm) {
   return 'dry';
 }
 
+/**
+ * Map rainfall (mm) → leaflet-heat intensity (0–1), aligned with legend bands:
+ * ≥0.5 green · ≥2.5 gold · ≥5 orange · ≥10 red · ≥20 purple
+ */
+function rainToIntensity(mm) {
+  if (mm < 0.5) return 0;
+  if (mm < 2.5) return 0.15;
+  if (mm < 5) return 0.35;
+  if (mm < 10) return 0.55;
+  if (mm < 20) return 0.75;
+  return 0.95;
+}
+
 function findNearestRainValue(colIndex) {
   if (!userLocationRef || !rainParsedDataset.length) return null;
   let best = null;
@@ -201,29 +214,32 @@ function renderHeatmapForColumn(colIndex) {
   const heatPoints = [];
   rainParsedDataset.forEach((row) => {
     const val = row.values[colIndex] || 0;
-    if (val >= 0.3) {
-      const intensity = Math.min(
-        1.0,
-        Math.max(0.08, Math.pow(val / 22, 0.85))
-      );
+    const intensity = rainToIntensity(val);
+    if (intensity > 0) {
       heatPoints.push([row.lat, row.lng, intensity]);
     }
   });
 
+  // Recreate layer so gradient/options always match legend bands
   if (rainHeatLayer) {
-    rainHeatLayer.setLatLngs(heatPoints);
-  } else if (typeof L.heatLayer === 'function') {
+    rainMap.removeLayer(rainHeatLayer);
+    rainHeatLayer = null;
+  }
+
+  if (typeof L.heatLayer === 'function' && heatPoints.length > 0) {
     rainHeatLayer = L.heatLayer(heatPoints, {
-      radius: 22,
-      blur: 16,
+      radius: 26,
+      blur: 18,
       maxZoom: 14,
-      minOpacity: 0.25,
+      max: 1,
+      minOpacity: 0.45,
       gradient: {
         0.0: '#7CFF7C',
-        0.18: '#FFD700',
-        0.35: '#FFA500',
-        0.55: '#FF4500',
-        0.8: '#C084FC'
+        0.15: '#7CFF7C',
+        0.35: '#FFD700',
+        0.55: '#FFA500',
+        0.75: '#FF4500',
+        0.95: '#C084FC'
       }
     }).addTo(rainMap);
   }
@@ -491,4 +507,10 @@ export async function fetchAndRenderRain() {
 
 export function getRainMap() {
   return rainMap;
+}
+
+/** Re-draw heatmap for current time slot (e.g. after panel becomes visible). */
+export function refreshRainHeatmap() {
+  if (!rainMap || !rainParsedDataset.length) return;
+  renderHeatmapForColumn(selectedTimeIdx);
 }
