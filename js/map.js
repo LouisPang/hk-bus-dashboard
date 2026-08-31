@@ -551,11 +551,6 @@ const pointMap = new Map();
       lng: pt.lng,
       values: pt.sums.map((sum, idx) => (pt.counts[idx] > 0 ? sum / pt.counts[idx] : 0))
     }));
-      }
-      pointMap.get(key).values[tIdx] = rainfallValue;
-    }
-
-    rainParsedDataset = Array.from(pointMap.values());
 
     rainTimeColumns = endingOrder.map((endRaw, idx) => {
       const prev = idx > 0 ? endingOrder[idx - 1] : null;
