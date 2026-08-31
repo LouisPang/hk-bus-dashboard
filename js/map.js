@@ -3,7 +3,6 @@
  */
 
 import {
-  HK_BOUNDS,
   HKO_RAINFALL_CSV_URL,
   getDistanceKm,
   logDebug
@@ -403,14 +402,6 @@ export async function fetchAndRenderRain() {
       const lng = parseFloat(row[lngIdx]);
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
 
-      if (
-        lat < HK_BOUNDS.minLat ||
-        lat > HK_BOUNDS.maxLat ||
-        lng < HK_BOUNDS.minLng ||
-        lng > HK_BOUNDS.maxLng
-      )
-        continue;
-
       const endingRaw = row[endingTimeIdx] || '';
       const tIdx = endingOrder.indexOf(endingRaw);
       if (tIdx < 0) continue;
@@ -470,10 +461,10 @@ export async function fetchAndRenderRain() {
     }
 
     const allVals = rainParsedDataset.flatMap((p) => p.values);
-    const hkMax = allVals.length ? Math.max(...allVals) : 0;
-    const hkMin = allVals.length ? Math.min(...allVals) : 0;
+    const dataMax = allVals.length ? Math.max(...allVals) : 0;
+    const dataMin = allVals.length ? Math.min(...allVals) : 0;
     logDebug(
-      `Rain CSV OK: ${dataRows.length} rows → ${rainParsedDataset.length} HK points, ${rainTimeColumns.length} slots, max ${hkMax.toFixed(1)} mm`
+      `Rain CSV OK: ${dataRows.length} rows → ${rainParsedDataset.length} grid points, ${rainTimeColumns.length} slots, max ${dataMax.toFixed(1)} mm`
     );
 
     const debugRainEl = document.getElementById('debug-rain-info');
@@ -481,9 +472,9 @@ export async function fetchAndRenderRain() {
       debugRainEl.innerHTML = `
           <b>Status:</b> Success<br>
           <b>CSV Raw Rows:</b> ${rows.length}<br>
-          <b>HK Grid Points:</b> ${rainParsedDataset.length}<br>
+          <b>Grid Points:</b> ${rainParsedDataset.length}<br>
           <b>Rainfall Col:</b> ${rainfallValIdx}<br>
-          <b>HK Rainfall Range:</b> ${hkMin.toFixed(2)} – ${hkMax.toFixed(2)} mm<br>
+          <b>Rainfall Range:</b> ${dataMin.toFixed(2)} – ${dataMax.toFixed(2)} mm<br>
           <b>Time slots:</b> ${rainTimeColumns.map((t) => t.label).join(', ')}
         `;
     }
