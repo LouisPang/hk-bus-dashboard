@@ -93,7 +93,7 @@ export function updateRainUserMarker() {
       color: '#FFCC00',
       weight: 2,
       fillColor: '#FFCC00',
-      fillOpacity: 0.9,
+      fillOpacity: 0.5,
       pane: 'markerPane'
     })
       .addTo(rainMap)
@@ -276,7 +276,7 @@ function getRainHeatOverlayClass() {
         pix[o] = rgb[0];
         pix[o + 1] = rgb[1];
         pix[o + 2] = rgb[2];
-        pix[o + 3] = Math.round(cover * 200);
+        pix[o + 3] = Math.round(cover * 100);
       }
       ctx.putImageData(img, 0, 0);
     }
