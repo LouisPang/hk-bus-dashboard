@@ -161,7 +161,8 @@ function updateRainMapVisibility() {
       refreshRainHeatmap();
     }, 80);
     setTimeout(() => {
-      fitRainMapToHK();
+      const map = getRainMap();
+      if (map) map.invalidateSize();
       refreshRainHeatmap();
     }, 280);
   } else {
