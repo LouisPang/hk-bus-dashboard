@@ -163,16 +163,164 @@ function rainIntensityClass(mm) {
 }
 
 /**
- * Map rainfall (mm) → leaflet-heat intensity (0–1), aligned with legend bands:
+ * Map rainfall (mm) → heat intensity (0–1), aligned with legend bands:
  * ≥0.5 green · ≥2.5 gold · ≥5 orange · ≥10 red · ≥20 purple
  */
 function rainToIntensity(mm) {
   if (mm < 0.5) return 0;
-  if (mm < 2.5) return 0.4;
-  if (mm < 5) return 0.55;
-  if (mm < 10) return 0.7;
-  if (mm < 20) return 0.85;
-  return 1;
+  if (mm >= 20) return 1;
+  if (mm >= 10) return 0.82 + 0.18 * Math.min(1, (mm - 10) / 10);
+  if (mm >= 5) return 0.64 + 0.18 * ((mm - 5) / 5);
+  if (mm >= 2.5) return 0.46 + 0.18 * ((mm - 2.5) / 2.5);
+  return 0.28 + 0.18 * ((mm - 0.5) / 2);
+}
+
+let RainHeatOverlay = null;
+
+function getRainHeatOverlayClass() {
+  if (RainHeatOverlay) return RainHeatOverlay;
+  RainHeatOverlay = L.Layer.extend({
+    initialize(points) {
+      this._points = points || [];
+    },
+    setLatLngs(points) {
+      this._points = points || [];
+      this._redraw();
+      return this;
+    },
+    onAdd(map) {
+      this._map = map;
+      this._canvas = L.DomUtil.create(
+        'canvas',
+        'leaflet-layer leaflet-zoom-hide'
+      );
+      this._canvas.style.pointerEvents = 'none';
+      this._ctx = this._canvas.getContext('2d', { willReadFrequently: true });
+      this._gradient = this._makeGradient();
+      map.getPanes().overlayPane.appendChild(this._canvas);
+      map.on('moveend zoomend resize viewreset', this._redraw, this);
+      this._redraw();
+    },
+    onRemove(map) {
+      L.DomUtil.remove(this._canvas);
+      map.off('moveend zoomend resize viewreset', this._redraw, this);
+    },
+    _makeGradient() {
+      const c = document.createElement('canvas');
+      c.width = 1;
+      c.height = 256;
+      const g = c.getContext('2d').createLinearGradient(0, 0, 0, 256);
+      g.addColorStop(0.0, 'rgba(124,255,124,0)');
+      g.addColorStop(0.22, '#7CFF7C');
+      g.addColorStop(0.42, '#FFD700');
+      g.addColorStop(0.6, '#FFA500');
+      g.addColorStop(0.78, '#FF4500');
+      g.addColorStop(1.0, '#C084FC');
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 1, 256);
+      return ctx.getImageData(0, 0, 1, 256).data;
+    },
+    _redraw() {
+      const map = this._map;
+      if (!map || !this._canvas) return;
+      const size = map.getSize();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      this._canvas.width = Math.max(1, Math.round(size.x * dpr));
+      this._canvas.height = Math.max(1, Math.round(size.y * dpr));
+      this._canvas.style.width = `${size.x}px`;
+      this._canvas.style.height = `${size.y}px`;
+      L.DomUtil.setPosition(
+        this._canvas,
+        map.containerPointToLayerPoint([0, 0])
+      );
+
+      const ctx = this._ctx;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, size.x, size.y);
+      if (!this._points.length) return;
+
+      const zoom = map.getZoom();
+      const lat = map.getCenter().lat;
+      const metersPerPx =
+        (156543.03392 * Math.cos((lat * Math.PI) / 180)) / 2 ** zoom;
+      // HKO grid ~2 km; radius covers a cell and blends with neighbours
+      const radius = Math.max(18, Math.min(64, (2000 / metersPerPx) * 0.9));
+
+      const bounds = map.getBounds().pad(0.2);
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < this._points.length; i++) {
+        const p = this._points[i];
+        if (!bounds.contains([p[0], p[1]])) continue;
+        const pt = map.latLngToContainerPoint([p[0], p[1]]);
+        const a = Math.max(0.15, Math.min(1, p[2]));
+        const grd = ctx.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, radius);
+        grd.addColorStop(0, `rgba(255,255,255,${a})`);
+        grd.addColorStop(0.45, `rgba(255,255,255,${a * 0.45})`);
+        grd.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = grd;
+        ctx.fillRect(pt.x - radius, pt.y - radius, radius * 2, radius * 2);
+      }
+
+      const img = ctx.getImageData(0, 0, this._canvas.width, this._canvas.height);
+      const pix = img.data;
+      const grad = this._gradient;
+      for (let i = 0; i < pix.length; i += 4) {
+        const alpha = pix[i + 3];
+        if (!alpha) continue;
+        const gi = alpha * 4;
+        pix[i] = grad[gi];
+        pix[i + 1] = grad[gi + 1];
+        pix[i + 2] = grad[gi + 2];
+        pix[i + 3] = Math.min(210, Math.round(alpha * 0.95 + 30));
+      }
+      ctx.putImageData(img, 0, 0);
+    }
+  });
+  return RainHeatOverlay;
+}
+
+function renderHeatmapForColumn(colIndex) {
+  if (!rainMap || !rainParsedDataset.length) return;
+
+  const heatPoints = [];
+  rainParsedDataset.forEach((row) => {
+    const val = row.values[colIndex] || 0;
+    const intensity = rainToIntensity(val);
+    if (intensity > 0) {
+      heatPoints.push([row.lat, row.lng, intensity]);
+    }
+  });
+
+  if (rainHeatLayer) {
+    rainHeatLayer.setLatLngs(heatPoints);
+  } else if (heatPoints.length > 0) {
+    const Overlay = getRainHeatOverlayClass();
+    rainHeatLayer = new Overlay(heatPoints).addTo(rainMap);
+  }
+
+  if (rainUserMarker) rainUserMarker.bringToFront();
+
+  logDebug(
+    `Rain heat: slot ${colIndex} → ${heatPoints.length} cells ≥0.5 mm`
+  );
+
+  if (heatPoints.length > 0) {
+    const rainBounds = L.latLngBounds(
+      heatPoints.map((p) => [p[0], p[1]])
+    );
+    const view = rainMap.getBounds();
+    if (!view.intersects(rainBounds)) {
+      const hk = L.latLngBounds(HK_VIEW_BOUNDS);
+      rainMap.fitBounds(hk.extend(rainBounds), {
+        padding: [16, 16],
+        maxZoom: 10
+      });
+    }
+  }
+
+  updatePlaybackUI();
+  updateLocalRainBadge();
 }
 
 function findNearestRainValue(colIndex) {
@@ -219,69 +367,6 @@ function updateLocalRainBadge() {
   badge.textContent = `附近 ${mmText} mm`;
   badge.className = `local-rain ${cls}`;
   badge.title = `最近網格約 ${Math.round(info.distKm * 1000)} m · 半小時累計雨量 ${mm.toFixed(2)} mm`;
-}
-
-function renderHeatmapForColumn(colIndex) {
-  if (!rainMap || !rainParsedDataset.length) return;
-
-  const heatPoints = [];
-  rainParsedDataset.forEach((row) => {
-    const val = row.values[colIndex] || 0;
-    const intensity = rainToIntensity(val);
-    if (intensity > 0) {
-      heatPoints.push([row.lat, row.lng, intensity]);
-    }
-  });
-
-  if (rainHeatLayer) {
-    rainMap.removeLayer(rainHeatLayer);
-    rainHeatLayer = null;
-  }
-
-  if (typeof L.heatLayer === 'function' && heatPoints.length > 0) {
-    // maxZoom must be <= typical view zoom. leaflet-heat scales intensity
-    // down by 2^(maxZoom - currentZoom); with maxZoom 14 at zoom 10 heat is ~1/16.
-    rainHeatLayer = L.heatLayer(heatPoints, {
-      radius: 32,
-      blur: 26,
-      maxZoom: 8,
-      max: 1,
-      minOpacity: 0.45,
-      gradient: {
-        0.0: '#7CFF7C',
-        0.4: '#7CFF7C',
-        0.55: '#FFD700',
-        0.7: '#FFA500',
-        0.85: '#FF4500',
-        1.0: '#C084FC'
-      }
-    }).addTo(rainMap);
-  } else if (heatPoints.length > 0) {
-    logDebug('[ERROR] L.heatLayer is not available');
-  }
-
-  if (rainUserMarker) rainUserMarker.bringToFront();
-
-  logDebug(
-    `Rain heat: slot ${colIndex} → ${heatPoints.length} cells ≥0.5 mm`
-  );
-
-  if (heatPoints.length > 0) {
-    const rainBounds = L.latLngBounds(
-      heatPoints.map((p) => [p[0], p[1]])
-    );
-    const view = rainMap.getBounds();
-    if (!view.intersects(rainBounds)) {
-      const hk = L.latLngBounds(HK_VIEW_BOUNDS);
-      rainMap.fitBounds(hk.extend(rainBounds), {
-        padding: [16, 16],
-        maxZoom: 10
-      });
-    }
-  }
-
-  updatePlaybackUI();
-  updateLocalRainBadge();
 }
 
 function setupPlaybackControls() {
