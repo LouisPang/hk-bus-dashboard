@@ -517,7 +517,7 @@ export async function fetchAndRenderRain() {
       }
     }
 
-    const pointMap = new Map();
+const pointMap = new Map();
     for (const row of dataRows) {
       if (row.length <= Math.max(latIdx, lngIdx, rainfallValIdx)) continue;
       const lat = parseFloat(row[latIdx]);
@@ -530,12 +530,27 @@ export async function fetchAndRenderRain() {
 
       const rainfallValue = parseFloat(row[rainfallValIdx]) || 0;
       const key = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+      
       if (!pointMap.has(key)) {
         pointMap.set(key, {
           lat,
           lng,
-          values: new Array(endingOrder.length).fill(0)
+          sums: new Array(endingOrder.length).fill(0),
+          counts: new Array(endingOrder.length).fill(0)
         });
+      }
+      
+      const point = pointMap.get(key);
+      point.sums[tIdx] += rainfallValue;
+      point.counts[tIdx] += 1;
+    }
+
+    // Convert accumulated sums and counts to average values per grid point
+    rainParsedDataset = Array.from(pointMap.values()).map((pt) => ({
+      lat: pt.lat,
+      lng: pt.lng,
+      values: pt.sums.map((sum, idx) => (pt.counts[idx] > 0 ? sum / pt.counts[idx] : 0))
+    }));
       }
       pointMap.get(key).values[tIdx] = rainfallValue;
     }
