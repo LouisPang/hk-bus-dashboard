@@ -276,7 +276,7 @@ function getRainHeatOverlayClass() {
         pix[o] = rgb[0];
         pix[o + 1] = rgb[1];
         pix[o + 2] = rgb[2];
-        pix[o + 3] = Math.round(cover * 100);
+        pix[o + 3] = Math.round(cover * 70);
       }
       ctx.putImageData(img, 0, 0);
     }
